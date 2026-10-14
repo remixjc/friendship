@@ -28,9 +28,9 @@ docker compose ps
 docker compose logs -f --tail=100
 ```
 
-浏览器打开 **http://localhost:3000**，首次访问创建管理员。默认只监听主机 `127.0.0.1`，无需预设密码。
+浏览器打开 **http://localhost:3000**；部署在飞牛或其他服务器时，打开 **http://服务器局域网IP:3000**。首次访问创建管理员，无需预设密码。默认绑定 `0.0.0.0`，允许通过主机各 IPv4 网络接口访问。
 
-需要局域网访问时，在 `.env` 增加 `BIND_ADDRESS=0.0.0.0`，并将 `APP_ORIGIN` 设置为浏览器实际访问的地址，例如 `http://192.168.1.10:3000`。先在本机完成管理员初始化再开放访问。
+已有 `.env` 如果设置了 `BIND_ADDRESS=127.0.0.1`，需改为 `BIND_ADDRESS=0.0.0.0`，再执行 `docker compose up -d` 应用端口变更。浏览器使用服务器实际 IP，不使用 `0.0.0.0`。`APP_ORIGIN` 可留空以校验当前 Host；如需固定访问地址，可设置为例如 `http://192.168.1.10:3000`。仅供本机访问时，将 `BIND_ADDRESS` 设置为 `127.0.0.1`。
 
 数据保存在命名卷 `friends-ship-data`，包括数据库、WAL 文件及 `secrets.key`。普通重启、容器重建和 `docker compose down` 会保留数据。`docker compose down -v` 会删除数据卷。
 
@@ -173,7 +173,7 @@ node --env-file=.env src/index.js
 | --- | --- | --- |
 | `PORT` | `3000` | 本地端口；Compose 中为主机映射端口，容器固定 3000 |
 | `HOST` | `0.0.0.0` | 本地应用监听地址 |
-| `BIND_ADDRESS` | `127.0.0.1` | Compose 主机监听地址 |
+| `BIND_ADDRESS` | `0.0.0.0` | Compose 主机监听地址；默认允许局域网访问 |
 | `DATA_DIR` | `./data` | 数据目录；容器固定 `/app/data` |
 | `TZ` | `Asia/Shanghai` | 容器时区；任务按用户配置的时区计算 |
 | `APP_ORIGIN` | 空 | 浏览器访问的准确地址，不含末尾 `/` |
@@ -182,7 +182,7 @@ node --env-file=.env src/index.js
 | `ADMIN_USERNAME` | 空 | 仅在首次初始化时创建管理员 |
 | `ADMIN_PASSWORD` | 空 | 与 `ADMIN_USERNAME` 同时提供，至少 10 位 |
 
-HTTPS 反向代理部署：配置 `APP_ORIGIN=https://attendance.example.com` 和 `COOKIE_SECURE=true`，代理到主机 `127.0.0.1:3000`。应用不信任客户端转发的 IP；登录限流按直接连接地址计算。
+HTTPS 本机反向代理部署：配置 `BIND_ADDRESS=127.0.0.1`、`APP_ORIGIN=https://attendance.example.com` 和 `COOKIE_SECURE=true`，代理到主机 `127.0.0.1:3000`。应用不信任客户端转发的 IP；登录限流按直接连接地址计算。
 
 登录密码使用 scrypt 加盐哈希。会话 Cookie 使用 HttpOnly、SameSite=Strict，服务端仅保存会话 token 哈希。登录会话 7 天过期，修改密码或停用用户立即撤销旧会话。写接口校验 CSRF token 与浏览器 Origin。网页使用严格 CSP，无外部字体和脚本。
 
