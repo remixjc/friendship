@@ -4,6 +4,7 @@ import { mkdirSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { defaults, AppError } from './config.js';
 import { createVault } from './security.js';
+import { credentialFingerprint } from './upstream-session.js';
 
 export function createStore(dataDir, encryptionKey) {
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
@@ -50,7 +51,11 @@ export function createStore(dataDir, encryptionKey) {
       level TEXT NOT NULL, event TEXT NOT NULL, message TEXT NOT NULL, created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS logs_by_user ON logs(user_id,id DESC);
-    PRAGMA user_version=1;
+    CREATE TABLE IF NOT EXISTS upstream_sessions (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      payload TEXT NOT NULL
+    );
+    PRAGMA user_version=2;
   `);
   // A submitted request may have reached the upstream before a process crash. Do not replay it.
   db.prepare("UPDATE runs SET status='unknown',message='服务在执行过程中重启；请核对考勤结果，系统不会自动重试',completed_at=? WHERE status='running'")
@@ -87,13 +92,33 @@ export function createStore(dataDir, encryptionKey) {
       if (!row) throw new AppError('用户不存在', 404);
       const config = { ...structuredClone(defaults), ...JSON.parse(row.config) };
       return { ...config, hasPassword: Boolean(row.password), revision: row.revision, updatedAt: row.updated_at,
-        ...(secret ? { password: vault.decrypt(row.password) } : {}) };
+        ...(secret ? { password: vault.decrypt(row.password), userId: id } : {}) };
     },
     saveSettings(id, config, password, clearPassword = false) {
-      const current = db.prepare('SELECT password FROM settings WHERE user_id=?').get(id);
+      const current = db.prepare('SELECT password,config FROM settings WHERE user_id=?').get(id);
       const encrypted = clearPassword ? '' : password ? vault.encrypt(password) : current.password;
-      db.prepare('UPDATE settings SET config=?,password=?,revision=revision+1,updated_at=? WHERE user_id=?')
-        .run(JSON.stringify(config), encrypted, new Date().toISOString(), id);
+      const previous = JSON.parse(current.config);
+      const credentialsChanged = clearPassword || Boolean(password && password !== vault.decrypt(current.password)) || ['apiBaseUrl', 'company', 'username', 'source', 'openId']
+        .some(key => previous[key] !== config[key]);
+      store.transaction(() => {
+        db.prepare('UPDATE settings SET config=?,password=?,revision=revision+1,updated_at=? WHERE user_id=?')
+          .run(JSON.stringify(config), encrypted, new Date().toISOString(), id);
+        if (credentialsChanged) db.prepare('DELETE FROM upstream_sessions WHERE user_id=?').run(id);
+      });
+    },
+    loadUpstreamSession(id) {
+      const row = db.prepare('SELECT payload FROM upstream_sessions WHERE user_id=?').get(id);
+      if (!row) return null;
+      try { return JSON.parse(vault.decrypt(row.payload)); }
+      catch { db.prepare('DELETE FROM upstream_sessions WHERE user_id=?').run(id); return null; }
+    },
+    saveUpstreamSession(id, session) {
+      const user = store.getUser(id);
+      if (!user || user.disabled) return;
+      if (credentialFingerprint(store.settings(id, true)) !== session.fingerprint) return;
+      db.prepare(`INSERT INTO upstream_sessions(user_id,payload) VALUES(?,?)
+        ON CONFLICT(user_id) DO UPDATE SET payload=excluded.payload`)
+        .run(id, vault.encrypt(JSON.stringify(session)));
     },
     plan: (id, day) => db.prepare('SELECT * FROM plans WHERE user_id=? AND day=?').get(id, day),
     log(id, level, event, message) {

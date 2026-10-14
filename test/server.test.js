@@ -18,6 +18,14 @@ async function fixture(t) {
     const data = options.body ? JSON.parse(options.body) : null;
     const parsed = new URL(url);
     upstreamRequests.push({ url: parsed.pathname, query: Object.fromEntries(parsed.searchParams), data, headers: Object.fromEntries(Object.entries(options.headers).map(([key, value]) => [key.toLowerCase(), value])) });
+    if (parsed.pathname.endsWith('/attendanceSummary')) {
+      const user = options.headers['X-Token'].slice('private-token-'.length);
+      return new Response(JSON.stringify({ msgCode: 200, content: { body: [{
+        employeeId: { valueId: `employee-${user}` },
+        annualLeave: { baseNum: 80, initNum: 66, usedNum: 35.5, availableNum: 30.5, expirationDate: '2027-06-30' },
+        lastYearLeave: { extendedUsedNum: 80, extendedRemainNum: 0, extendedExpiryDate: '2026-06-30' },
+      }] } }));
+    }
     if (parsed.pathname.includes('timeCard')) {
       const user = options.headers['X-Token'].slice('private-token-'.length);
       const summary = parsed.pathname.endsWith('Summary');
@@ -32,7 +40,7 @@ async function fixture(t) {
     return new Response(JSON.stringify(url.endsWith('/login') ? {
       content: { body: { token: `private-token-${user}`, employeeId: { valueId: `employee-${user}` }, openId: 'openid-from-server', employeeName: '示例员工' } },
     } : { code: 0, success: true }), { headers: { 'Content-Type': 'application/json' } });
-  });
+  }, 12000, { store });
   const scheduler = createScheduler(store, attendance);
   const server = await createHttpServer({ store, scheduler, attendance, env: {} });
   const origin = 'http://localhost:3000';
@@ -119,7 +127,7 @@ test('完整流程：配置、加密、考勤登录、模拟、真实打卡、�
   assert.equal(f.upstreamRequests.length, before);
   const real = await f.admin.request('/api/attendance/run', 'POST', { dryRun: false });
   assert.equal(real.data.status, 'success');
-  assert.equal(f.upstreamRequests.length, before + 2);
+  assert.equal(f.upstreamRequests.length, before + 1);
   const request = f.upstreamRequests.at(-1);
   assert.equal(request.headers['x-token'], 'private-token-attendance-user');
   assert.equal(request.data.data.employeeId, 'employee-attendance-user');
@@ -255,4 +263,50 @@ test('查询等待期间注销会话后，不向已注销会话返回考勤结�
   const result = await first;
   assert.equal(result.status, 401);
   assert.ok(!JSON.stringify(result.data).includes('must-not-be-returned'));
+});
+
+test('年假接口需要登录和配置，员工 ID 来自个人账号且与考勤查询共用 token', async t => {
+  const f = await fixture(t);
+  assert.equal((await f.client().request('/api/attendance/quota')).status, 401);
+  assert.equal((await f.admin.request('/api/attendance/quota')).status, 400);
+  await f.admin.request('/api/settings', 'PUT', { apiBaseUrl: f.apiBaseUrl, username: 'quota-account', password: 'test-quota-password', openId: 'personal-openid' });
+  await f.admin.request('/api/attendance/records?month=2026-10');
+  const result = await f.admin.request('/api/attendance/quota?employeeId=999&userId=another-user');
+  assert.equal(result.status, 200);
+  assert.equal(result.data.current.remaining, 30.5);
+  assert.equal(result.data.previous[0].remaining, 0);
+  assert.equal(result.headers.get('cache-control'), 'no-store');
+  assert.ok(!JSON.stringify(result.data).includes('private-token'));
+  assert.equal(f.upstreamRequests.filter(req => req.url.endsWith('/login')).length, 1);
+  const query = f.upstreamRequests.find(req => req.url.endsWith('/attendanceSummary'));
+  assert.equal(query.query.employeeId, 'employee-quota-account');
+  assert.equal(JSON.parse(query.query.filter).fieldValue, 'employee-quota-account');
+  assert.equal((await f.admin.request('/api/runs')).data.total, 0);
+});
+
+test('年假并发锁失败后释放，注销或停用后不返回查询结果并撤销上游缓存', async t => {
+  const f = await fixture(t);
+  const created = await f.admin.request('/api/users', 'POST', { username: 'quota-member', password: 'member-test-password', role: 'user' });
+  assert.equal(created.status, 201);
+  const member = f.client();
+  await member.request('/api/auth/login', 'POST', { username: 'quota-member', password: 'member-test-password' });
+  await member.request('/api/settings', 'PUT', { apiBaseUrl: f.apiBaseUrl, username: 'member-quota', password: 'test-upstream-password', openId: 'test-openid' });
+  await member.request('/api/attendance/quota');
+  assert.ok(f.store.loadUpstreamSession(created.data.id));
+  let release, started;
+  const ready = new Promise(resolve => { started = resolve; });
+  f.attendance.quota = () => new Promise(resolve => { release = resolve; started(); });
+  const first = member.request('/api/attendance/quota');
+  await ready;
+  assert.equal((await member.request('/api/attendance/quota')).status, 409);
+  await f.admin.request(`/api/users/${created.data.id}`, 'PATCH', { disabled: true });
+  assert.equal(f.store.loadUpstreamSession(created.data.id), null);
+  release({ privateData: 'hidden-quota' });
+  const result = await first;
+  assert.equal(result.status, 401);
+  assert.ok(!JSON.stringify(result.data).includes('hidden-quota'));
+  f.attendance.quota = async () => { throw new Error('hidden error'); };
+  assert.equal((await f.admin.request('/api/attendance/quota')).status, 500);
+  f.attendance.quota = async () => ({ current: null, previous: [] });
+  assert.equal((await f.admin.request('/api/attendance/quota')).status, 200);
 });

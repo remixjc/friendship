@@ -13,6 +13,8 @@
 - SQLite 持久化每日计划与执行状态；同一天同一时段的定时任务只提交一次。
 - 执行记录分页和运行日志，保留最近 90 天。
 - 查询真实考勤记录：按月份查看考勤明细、班次、打卡/休假等项目及月度汇总，支持明细和汇总各自分页。
+- 年假配额：当前年度额度、已释放、已使用、未使用及失效日期，展示前两年的结余。
+- 考勤登录状态按用户加密保存，查询与打卡复用 token，容器重建后继续有效；到期或上游明确拒绝登录状态时自动重新登录。
 - 导入旧项目 `datas.json`。密码进入加密存储，不会回显或输出到日志。
 
 ## Docker 启动
@@ -54,7 +56,7 @@ docker compose down
 
 1. 创建控制台管理员，登录密码至少 10 位。控制台账号与考勤账号分别管理。
 2. 在「个人配置」中填写考勤公司、账号、密码、OpenID 等信息；或导入原项目的 `datas.json`。
-3. 设置时间、坐标和地点，保存后点击「测试考勤登录」。此操作会登录考勤系统，但不提交打卡。
+3. 设置时间、坐标和地点，保存后点击「测试考勤登录」。此操作复用或获取考勤登录状态，并调用只读接口验证，不提交打卡。
 4. 点击「模拟打卡」，确认执行记录和计划符合预期。
 5. 开启定时任务。可先保持模拟模式运行，确认后关闭模拟模式并保存。
 6. 管理员可在「用户管理」创建成员。成员登录后自行填写个人考勤配置。
@@ -86,7 +88,11 @@ body: {"data":{"longitude":"...","latitude":"...","punchSite":"...","punchWay":2
 
 登录响应要求 `content.body` 中包含 `token`、`employeeId.valueId`、`openId`，可选 `employeeName`。打卡响应在顶层、`content` 或 `content.body` 中出现 `success: true`，或 `code/statusCode/msgCode` 为 `0`、`200`、`"0"`、`"200"`、`"0000"`，且没有明确失败标记时，才确认为成功。
 
-HTTP 成功但响应不明、提交后超时或网络中断会记为「结果待核对」，不会自动重试。请在考勤系统核对；如果实际接口的成功协议不同，需要调整 `src/attendance.js` 中的 `responseVerdict`。
+token、员工 ID 和服务端 OpenID 使用 AES-256-GCM 加密保存到 SQLite，按控制台用户隔离。首次使用时登录，随后考勤记录、年假查询、登录验证和真实打卡共用该状态。JWT 含 `exp` 时按到期时间更新；其他 token 不猜测有效期，在接口明确返回 HTTP/业务 401 或失败响应明确表示 token/登录过期时重新登录，并最多重试原请求一次。并发调用共享一次登录或刷新。普通 HTTP/业务 403 权限拒绝不会触发刷新。
+
+修改接口地址、公司、账号、密码、source 或 OpenID 时清除旧状态；只改时间或位置等配置保留状态。删除密码或停用用户也撤销上游缓存。容器重启或重建保留数据卷和密钥即可继续复用。「测试考勤登录」通过 `GET /api/system/employee/info` 验证缓存 token，正常时不会强制重新登录。
+
+HTTP 成功但响应不明、提交后超时或网络中断会记为「结果待核对」，不会自动重试。只有明确登录失效的打卡请求会在重新登录后重试一次，沿用同一坐标和地点。请在考勤系统核对未知结果；如果实际接口的成功协议不同，需要调整 `src/attendance.js` 中的 `responseVerdict`。
 
 节假日接口兼容 `GET {holidayUrl}?date=yyyyMMdd`，读取 `data.list[0].workday` 的 `0/1` 值。上游请求超时 12 秒，拒绝自动跳转，响应限制 1MB。
 
@@ -104,7 +110,7 @@ GET {apiBaseUrl}/api/workforce/timeCardAttendanceSummary
 dateRange：{"beginDate":"2026-10-01","endDate":"2026-10-31"}
 ```
 
-每次查询只登录一次，随后并行获取明细和汇总。月份会自动计算月末，包括闰年。明细按日期分页，默认每页 20 个日期，展开每天全部 `timeAttendance` 项目；汇总每页 50 项，独立分页。接口需要成功状态和 `content.body` 列表、`content.totalCount` 总数；业务鉴权失败不会被当成空结果。
+查询复用已保存的登录状态，首次或失效时登录，随后并行获取明细和汇总。月份会自动计算月末，包括闰年。明细按日期分页，默认每页 20 个日期，展开每天全部 `timeAttendance` 项目；汇总每页 50 项，独立分页。接口需要成功状态和 `content.body` 列表、`content.totalCount` 总数；业务鉴权失败不会被当成空结果。
 
 实际开始/结束时间使用 `beginDateTime/endDateTime`；为空时展示「—」。`inTimeCardExtraAttendance/outTimeCardExtraAttendance.shouldPunchDateTime` 单独以灰色「计划」展示，不表示实际已打卡。年假等项目保留上游起止时间。时长和汇总直接展示上游值，例如 `43:01` 不会被转换为一天中的时刻或在本地重新计算。
 
@@ -114,7 +120,13 @@ dateRange：{"beginDate":"2026-10-01","endDate":"2026-10-31"}
 
 移动端登录 token 是否拥有这两个查询接口的权限，需要在个人配置中填写自己的考勤账号后实测；若上游权限不足，页面明确提示查询被拒绝。
 
-本功能已通过 35 项自动化测试（含本机及 Docker Node.js 24 环境），以及使用模拟上游的桌面、手机浏览器验证：月份切换、分页、多项目、实际/计划时间区分、超过 24 小时的汇总、单接口失败、空数据和错误恢复。测试不会连接真实考勤服务或提交打卡。
+### 年假配额查询
+
+「年假配额」调用 `GET {apiBaseUrl}/api/workforce/attendanceSummary`，携带 `X-Token`、`pageNum=1`、`pageSize=10`、个人员工 ID、员工过滤条件和当前月日期范围；沿用原个人页面的 `skipAuth=true` 参数。月份和年度按个人配置时区计算，员工 ID 来自上游登录，客户端不能指定其他员工，返回其他员工数据时拒绝展示。
+
+读取 `content.body[0].annualLeave` 中的 `baseNum/initNum/usedNum/availableNum/expirationDate`，对应年度额度、已释放、已使用、未使用和失效日期。`lastYearLeave` 与 `beforeLastYearLeave` 的 `extendedUsedNum/extendedRemainNum/extendedExpiryDate` 展示前两年的使用、结余和失效日期。小时数保留小数和零，缺失字段显示「—」，未使用时长直接采用上游数据，不以年度额度减已用推算。查询失败显示错误，无数据明确显示空状态。
+
+接口和字段已对照原系统个人页面及其前端代码确认。项目自身登录取得的移动端 token 是否拥有年假接口权限仍需使用个人账号实测；权限不足会显示查询拒绝，不使用浏览器里的 token。
 
 ## 本地开发
 
@@ -143,7 +155,7 @@ node --env-file=.env src/index.js
 
 测试使用临时 SQLite 和进程内 HTTP 请求处理器，模拟上游响应，不监听网络端口，不连接真实考勤服务。覆盖账号权限、CSRF、多用户隔离、密码加密、接口报文、响应判定、调休、计划去重、错过任务、重启恢复和异常处理。
 
-2026-10-14 验证结果：23 项测试在本机 Node.js 26 和 Docker Node.js 24.21.0 中均通过；容器成功构建、启动并通过健康检查，以非 root 用户运行。浏览器验证了管理员初始化、配置保存、模拟执行、创建成员、成员登录、数据隔离和桌面/手机布局。真实考勤接口尚需使用自己的账号验证。
+2026-10-14 验证结果：49 项测试在本机 Node.js 和 Docker Node.js 24 中均通过，覆盖年假字段、时区、多用户隔离、加密持久化、重启复用、凭据变更、并发刷新、明确过期重试，以及网络故障不重放打卡。测试使用临时数据与模拟上游，不连接真实考勤服务或提交真实打卡。
 
 ## 环境配置
 
@@ -164,7 +176,7 @@ HTTPS 反向代理部署：配置 `APP_ORIGIN=https://attendance.example.com` �
 
 登录密码使用 scrypt 加盐哈希。会话 Cookie 使用 HttpOnly、SameSite=Strict，服务端仅保存会话 token 哈希。登录会话 7 天过期，修改密码或停用用户立即撤销旧会话。写接口校验 CSRF token 与浏览器 Origin。网页使用严格 CSP，无外部字体和脚本。
 
-考勤密码使用 AES-256-GCM 加密。默认密钥自动生成在数据卷 `secrets.key`；数据库与密钥需要一起备份。设置 `ENCRYPTION_KEY` 后必须保持不变，替换密钥会使原密码无法解密。备份前停止服务并复制整个数据卷，恢复时完整还原。`.env` 和 `data/` 均已加入 Git 忽略。
+考勤密码和上游登录状态使用 AES-256-GCM 加密。默认密钥自动生成在数据卷 `secrets.key`；数据库与密钥需要一起备份。设置 `ENCRYPTION_KEY` 后必须保持不变，替换密钥会使原密码和登录状态无法解密。备份前停止服务并复制整个数据卷，恢复时完整还原。`.env` 和 `data/` 均已加入 Git 忽略。
 
 ## API
 
@@ -182,6 +194,7 @@ HTTPS 反向代理部署：配置 `APP_ORIGIN=https://attendance.example.com` �
 | `/api/attendance/test-login` | POST | 测试考勤登录 |
 | `/api/attendance/run` | POST | 手动执行，`{"dryRun":true}` 为模拟 |
 | `/api/attendance/records?month=2026-10&page=1&pageSize=20&summaryPage=1` | GET | 当前账号的考勤明细及月度汇总 |
+| `/api/attendance/quota` | GET | 当前账号年假配额及前两年结余 |
 | `/api/runs?page=1` | GET | 分页记录 |
 | `/api/logs` | GET | 最近 100 条日志 |
 | `/api/users` | GET / POST | 管理员查看、创建成员 |

@@ -79,7 +79,7 @@ test('msgCode 兼容登录和真实打卡成功，冲突失败标记优先', asy
     ? { ...loginResponse, msgCode: 200 } : { msgCode: 200 }));
   assert.match((await api.punch(config, false)).message, /成功/);
   const rejected = createAttendance(async () => response({ ...loginResponse, msgCode: 401, success: true }));
-  await assert.rejects(() => rejected.login(config), /登录失败/);
+  await assert.rejects(() => rejected.login(config), /登录状态已失效/);
 });
 
 test('查询只登录一次，携带 token 和动态员工 ID，明细和汇总按各自页码请求', async () => {
@@ -140,4 +140,110 @@ test('不兼容分页、两接口失败、员工数据不匹配和查询前无�
   }
   const noNetwork = createAttendance(async () => { throw new Error('unexpected network'); });
   await assert.rejects(() => noNetwork.report(config, { month: '2026-13' }), /月份/);
+});
+
+test('年假与考勤查询、账号验证及真实打卡复用一次登录，年假按配置时区查询当前月', async () => {
+  const requests = [];
+  const api = createAttendance(async (url, options) => {
+    const parsed = new URL(url);
+    requests.push({ parsed, options });
+    if (parsed.pathname.endsWith('/login')) return response(loginResponse);
+    if (parsed.pathname.endsWith('/attendanceSummary')) return response({ msgCode: 200, content: { body: [{
+      employeeId: 42, annualLeave: { baseNum: 80, initNum: 66, usedNum: 35.5, availableNum: 30.5 },
+    }] } });
+    return response({ msgCode: 200, content: { body: [], totalCount: 0 } });
+  }, 12000, { clock: () => Date.parse('2026-12-31T17:00:00Z') });
+  const quota = await api.quota(config);
+  await api.report(config, { month: '2026-10' });
+  await api.testLogin(config);
+  await api.punch(config, false);
+  assert.equal(requests.filter(req => req.parsed.pathname.endsWith('/login')).length, 1);
+  const request = requests.find(req => req.parsed.pathname.endsWith('/attendanceSummary'));
+  assert.equal(request.options.method, 'GET');
+  assert.equal(request.options.headers['X-Token'], 'test-token');
+  assert.equal(request.parsed.searchParams.get('employeeId'), '42');
+  assert.equal(request.parsed.searchParams.get('skipAuth'), 'true');
+  assert.deepEqual(JSON.parse(request.parsed.searchParams.get('filter')), {
+    fieldName: 'employeeCode', condition: '=', fieldValue: 42, entityName: 'employee',
+  });
+  assert.deepEqual(JSON.parse(request.parsed.searchParams.get('dateRange')), { beginDate: '2027-01-01', endDate: '2027-01-31' });
+  assert.equal(quota.current.year, 2027);
+  assert.equal(quota.current.remaining, 30.5);
+  assert.ok(!JSON.stringify(quota).includes('test-token'));
+});
+
+test('两条并发查询都遇到 HTTP401 或业务401 时只刷新一次，共用新 token', async () => {
+  for (const rejection of [
+    () => new Response('{}', { status: 401 }),
+    () => response({ msgCode: 401 }),
+    () => response({ success: false, message: 'Token expired' }),
+  ]) {
+    let logins = 0, queries = 0;
+    const api = createAttendance(async (url, options) => {
+      if (String(url).endsWith('/login')) {
+        logins++;
+        return response({ content: { body: { ...loginResponse.content.body, token: `token-${logins}` } } });
+      }
+      queries++;
+      if (options.headers['X-Token'] === 'token-1') return rejection();
+      assert.equal(options.headers['X-Token'], 'token-2');
+      return response({ msgCode: 200, content: { body: [], totalCount: 0 } });
+    });
+    const result = await api.report(config, { month: '2026-10' });
+    assert.equal(result.records.total, 0);
+    assert.equal(result.summary.total, 0);
+    assert.equal(logins, 2);
+    assert.equal(queries, 4);
+    await api.report(config, { month: '2026-10' });
+    assert.equal(logins, 2);
+  }
+});
+
+test('刷新后仍失效最多重试一次；权限不足不会重复登录', async () => {
+  for (const [reply, expectedLogins, expectedQueries] of [
+    [{ msgCode: 401 }, 2, 2], [{ msgCode: 403, msgText: '没有权限' }, 1, 1],
+  ]) {
+    let logins = 0, queries = 0;
+    const api = createAttendance(async url => {
+      if (String(url).endsWith('/login')) {
+        logins++;
+        return response({ content: { body: { ...loginResponse.content.body, token: `token-${logins}` } } });
+      }
+      queries++;
+      return response(reply);
+    });
+    await assert.rejects(() => api.quota(config));
+    assert.equal(logins, expectedLogins);
+    assert.equal(queries, expectedQueries);
+  }
+});
+
+test('打卡只在明确登录失效后刷新重试，超时、HTTP500、不明响应均不重放', async () => {
+  for (const mode of ['expired', 'timeout', 'server', 'unknown', 'forbidden']) {
+    let logins = 0, punches = 0;
+    const bodies = [];
+    const api = createAttendance(async (url, options) => {
+      if (String(url).endsWith('/login')) {
+        logins++;
+        return response({ content: { body: { ...loginResponse.content.body, token: `token-${logins}` } } });
+      }
+      punches++;
+      bodies.push(options.body);
+      if (mode === 'expired') return punches === 1 ? new Response('{}', { status: 401 }) : response({ msgCode: 200 });
+      if (mode === 'timeout') throw new Error('secret-timeout');
+      if (mode === 'server') return new Response('{}', { status: 500 });
+      if (mode === 'forbidden') return new Response('{}', { status: 403 });
+      return response({});
+    });
+    if (mode === 'expired') {
+      await api.punch(config, false);
+      assert.equal(logins, 2);
+      assert.equal(punches, 2);
+      assert.equal(bodies[0], bodies[1]);
+    } else {
+      await assert.rejects(() => api.punch(config, false), error => error.outcome === (mode === 'forbidden' ? 'failed' : 'unknown'));
+      assert.equal(logins, 1);
+      assert.equal(punches, 1);
+    }
+  }
 });

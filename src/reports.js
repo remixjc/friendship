@@ -70,3 +70,37 @@ export function normalizeSummary(rows, employeeId) {
     };
   });
 }
+
+export function normalizeQuota(rows, employeeId, year) {
+  if (!Array.isArray(rows) || rows.length > 10) throw new AppError('年假配额列表格式不兼容', 502);
+  const hours = value => {
+    if (!['number', 'string'].includes(typeof value) || String(value).trim() === '') return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  };
+  const date = value => typeof value === 'string' && isDate(value.slice(0, 10)) ? value.slice(0, 10) : null;
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') throw new AppError('年假配额格式不兼容', 502);
+    assertEmployee(row.employeeId, employeeId);
+  }
+  if (rows.length > 1) throw new AppError('年假配额返回多条员工记录，请检查查询条件', 502);
+  const row = rows[0];
+  const normalize = (value, quotaYear, previous) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    return {
+      year: quotaYear,
+      total: previous ? null : hours(value.baseNum),
+      released: previous ? null : hours(value.initNum),
+      used: hours(previous ? value.extendedUsedNum : value.usedNum),
+      remaining: hours(previous ? value.extendedRemainNum : value.availableNum),
+      expiresOn: date(previous ? value.extendedExpiryDate : value.expirationDate),
+    };
+  };
+  return {
+    current: normalize(row?.annualLeave, year, false),
+    previous: [
+      normalize(row?.lastYearLeave, year - 1, true),
+      normalize(row?.beforeLastYearLeave, year - 2, true),
+    ].filter(Boolean),
+  };
+}

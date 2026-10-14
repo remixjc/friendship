@@ -74,7 +74,7 @@ function showAuth(initialized) {
     finally { submit.disabled = false; }
   });
 }
-const pages = { dashboard: ['dashboard', '工作概览', 'Overview'], attendance: ['logs', '考勤记录', 'Attendance'], settings: ['settings', '个人配置', 'Configuration'], runs: ['clock', '执行记录', 'History'], logs: ['logs', '运行日志', 'Activity'], users: ['users', '用户管理', 'Members'], account: ['shield', '账号安全', 'Security'] };
+const pages = { dashboard: ['dashboard', '工作概览', 'Overview'], attendance: ['logs', '考勤记录', 'Attendance'], quota: ['sun', '年假配额', 'Leave quota'], settings: ['settings', '个人配置', 'Configuration'], runs: ['clock', '执行记录', 'History'], logs: ['logs', '运行日志', 'Activity'], users: ['users', '用户管理', 'Members'], account: ['shield', '账号安全', 'Security'] };
 function shell() {
   root.innerHTML = `<div class="shell"><aside class="sidebar">${brand}<div class="nav-label">WORKSPACE</div><nav class="nav">${Object.entries(pages).filter(([key]) => key !== 'users' || state.user.role === 'admin').map(([key, [name, title]]) => `<a href="#${key}" data-page="${key}">${icon(name)}${title}</a>`).join('')}</nav><div class="sidebar-bottom"><div class="side-note"><strong>每一次执行，都有迹可循。</strong><p>计划和结果持久保存，随时了解<br>你的考勤任务运行情况。</p></div><div class="profile"><span class="avatar">${escape(state.user.displayName.slice(0, 1).toUpperCase())}</span><div class="profile-info"><strong>${escape(state.user.displayName)}</strong><span>${state.user.role === 'admin' ? '管理员' : '成员'}</span></div><button class="logout" data-action="logout" aria-label="退出登录">${icon('logout')}</button></div></div></aside><main class="main"><header class="topbar"><div>工作空间 <span> / </span><strong id="breadcrumb">工作概览</strong></div><div class="topbar-right"><span class="online">服务运行中</span><span class="profile-mobile">${escape(state.user.displayName)}<button data-action="logout">退出</button></span><span id="top-date"></span></div></header><div class="content" id="content"></div></main></div>`;
   root.addEventListener('click', onClick);
@@ -111,6 +111,19 @@ function attendanceTable(data) {
 function reportError(message) {
   return `<div class="report-error" role="alert">${icon('logs')}<p>${escape(message)}</p><span>检查个人配置和考勤查询权限后重试。</span></div>`;
 }
+function quotaView(data = null, error = null) {
+  const configured = state.settings.username && state.settings.company && state.settings.openId && state.settings.hasPassword;
+  const quotaCard = (quota, current) => `<section class="card report-summary quota-summary"><div class="card-head"><h2>${quota.year} 年${current ? '年假配额' : '结余'}</h2>${badge(current ? '当前年度' : '过往年度', current ? '' : 'gray')}</div><div class="summary-grid">${[
+    ...(current ? [['年度额度', quota.total], ['已释放', quota.released]] : []),
+    ['已使用', quota.used], ['未使用', quota.remaining],
+  ].map(([label, value]) => `<article class="summary-item"><strong>${label}</strong><p>${escape(value ?? '—')}<small>小时</small></p></article>`).join('')}</div><div class="quota-expiry">失效日期：${escape(quota.expiresOn || '未提供')}</div></section>`;
+  return heading('年假配额', '查看当前年度额度、使用情况及过往年度结余。', button('刷新配额', 'refresh', 'refresh'))
+    + (!configured ? `<section class="card">${empty('请先在个人配置中填写考勤账号信息。')}<div class="report-config">${button('前往个人配置', 'settings', 'settings', 'primary')}</div></section>` : error ? `<section class="card">${reportError(error)}</section>` : data ? `
+      <div class="quota-caption">${escape(data.employeeName)} · 更新于 ${dateFormat(data.queriedAt)} · 数据来自考勤系统</div>
+      ${data.current ? quotaCard(data.current, true) : `<section class="card report-summary">${empty('上游尚未提供当前年度的年假配额。')}</section>`}
+      ${data.previous.map(quota => quotaCard(quota, false)).join('')}
+      <div class="footer"><span>未使用时长采用上游值，不以年度额度减去已用时长推算。</span><span>未提供的数据展示为「—」。</span></div>` : '');
+}
 function attendanceView(data = null, error = null) {
   const configured = state.settings.username && state.settings.company && state.settings.openId && state.settings.hasPassword;
   return heading('考勤记录', '查看考勤系统中的实际明细与月度汇总。', button('刷新考勤', 'refresh', 'refresh'))
@@ -135,7 +148,7 @@ function settingsView(config) {
   return heading('个人配置', '配置你的考勤账号与执行计划。修改后，请保存再测试。')
     + `<div class="settings-layout"><form id="settings-form">${section('01', '运行方式', '先用模拟模式验证，准备好后再开启真实执行。',
       toggle('enabled', '开启定时任务', config.enabled, '在工作日按上午、下午计划自动执行。') + toggle('dryRun', '模拟模式', config.dryRun, '仅生成执行记录，不登录或提交考勤请求。'))}
-      ${section('02', '考勤账号', '用于登录原项目对应的考勤系统，与控制台登录账号相互独立。', `<div class="form-grid">${field('company', '公司标识', config.company)}${field('username', '考勤用户名', config.username)}${field('password', '考勤密码', '', { type: 'password', placeholder: config.hasPassword ? '已保存，留空保持原密码' : '请输入考勤密码', hint: '加密保存，页面不会回显。' })}${field('openId', 'OpenID', config.openId)}${field('source', '登录来源 source', config.source, { type: 'number', min: 0, max: 100, step: 1 })}${field('apiBaseUrl', '考勤接口根地址', config.apiBaseUrl, { type: 'url', hint: '登录与打卡使用同一个 HTTPS 域名。' })}</div><label class="hint"><input type="checkbox" name="clearPassword"> 删除已保存的考勤密码</label>`)}
+      ${section('02', '考勤账号', '登录状态自动保存，失效后重新登录；修改考勤账号会清除原登录状态。', `<div class="form-grid">${field('company', '公司标识', config.company)}${field('username', '考勤用户名', config.username)}${field('password', '考勤密码', '', { type: 'password', placeholder: config.hasPassword ? '已保存，留空保持原密码' : '请输入考勤密码', hint: '加密保存，页面不会回显。' })}${field('openId', 'OpenID', config.openId)}${field('source', '登录来源 source', config.source, { type: 'number', min: 0, max: 100, step: 1 })}${field('apiBaseUrl', '考勤接口根地址', config.apiBaseUrl, { type: 'url', hint: '登录与打卡使用同一个 HTTPS 域名。' })}</div><label class="hint"><input type="checkbox" name="clearPassword"> 删除已保存的考勤密码</label>`)}
       ${section('03', '每日时间计划', '每天在时间段内随机选择一个分钟。上午、下午任务各执行一次。', `<div class="form-grid">${field('amStart', '上午开始', config.amStart, { type: 'time', required: true })}${field('amEnd', '上午结束', config.amEnd, { type: 'time', required: true })}${field('pmStart', '下午开始', config.pmStart, { type: 'time', required: true })}${field('pmEnd', '下午结束', config.pmEnd, { type: 'time', required: true })}${field('freshDate', '每日刷新时间', config.freshDate, { type: 'time', required: true, hint: '需早于或等于上午开始时间。' })}${field('timezone', '计划时区', config.timezone, { required: true, hint: '例如 Asia/Shanghai、Asia/Tokyo。' })}</div>`)}
       ${section('04', '工作日规则', '可识别调休，也可以为指定日期直接覆盖工作日状态。', `<div class="form-grid">${select('workdayMode', '工作日判断', config.workdayMode, [['weekdays', '周一至周五'], ['holiday', '中国节假日接口（含调休）']])}${select('holidayFallback', '节假日接口失败时', config.holidayFallback, [['skip', '跳过当天自动任务'], ['weekdays', '回退为周一至周五']])}${field('holidayUrl', '节假日接口地址', config.holidayUrl, { type: 'url', span: true, hint: '兼容 data.list[0].workday，系统自动附加 date=yyyyMMdd。' })}<label class="field span-2"><span>指定日期覆盖（JSON）</span><textarea name="workdayOverrides" spellcheck="false" placeholder='{"2026-10-01":0,"2026-10-10":1}'>${escape(JSON.stringify(config.workdayOverrides, null, 2))}</textarea><small>0 = 休息日，1 = 工作日。日期覆盖优先于其他规则。</small></label></div>`)}
       ${section('05', '打卡位置', '按原项目规则，从地点列表中随机选择地点，并可对坐标添加正向偏移。', `<div class="form-grid">${field('longitude', '经度', config.longitude, { type: 'number', min: -180, max: 180, step: 'any', required: true })}${field('latitude', '纬度', config.latitude, { type: 'number', min: -90, max: 90, step: 'any', required: true })}${field('coordinateJitter', '最大随机偏移（度）', config.coordinateJitter, { type: 'number', min: 0, max: 0.001, step: 'any', hint: '设置为 0 时使用固定坐标。', span: true })}<label class="field span-2"><span>打卡地点</span><textarea name="sites" required rows="5">${escape(config.sites.join('\n'))}</textarea><small>每行一个地点，最多 50 个。</small></label></div>`)}
@@ -172,6 +185,16 @@ async function renderPage({ quiet = false } = {}) {
           const data = await api(`/attendance/records?${query}`);
           markup = attendanceView(data);
         } catch (error) { markup = attendanceView(null, error.message); }
+      }
+    } else if (page === 'quota') {
+      const config = await api('/settings');
+      if (renderId !== state.renderId || !state.user) return;
+      state.settings = config;
+      if (!state.settings.username || !state.settings.company || !state.settings.openId || !state.settings.hasPassword) {
+        markup = quotaView();
+      } else {
+        try { markup = quotaView(await api('/attendance/quota')); }
+        catch (error) { markup = quotaView(null, error.message); }
       }
     } else if (page === 'runs') {
       const data = await api(`/runs?page=${state.runsPage}`);

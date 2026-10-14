@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeDays, normalizeSummary, reportQuery } from '../src/reports.js';
+import { normalizeDays, normalizeSummary, normalizeQuota, reportQuery } from '../src/reports.js';
 
 test('月份查询校验分页，并正确计算闰年、非闰年和跨年月份', () => {
   assert.deepEqual(reportQuery({ month: '2024-02' }).dateRange, { beginDate: '2024-02-01', endDate: '2024-02-29' });
@@ -54,4 +54,25 @@ test('拒绝其他员工、非查询月份、错误列表项目和无效日期',
   assert.throws(() => normalizeDays([{ scheduleDate: '2026-11-01' }], '42', '2026-10'), /非查询月份/);
   assert.throws(() => normalizeDays([{ scheduleDate: '2026-02-30' }], '42', '2026-02'), /无效日期/);
   assert.throws(() => normalizeDays([{ scheduleDate: '2026-10-01', timeAttendance: 'invalid' }], '42', '2026-10'), /格式不兼容/);
+});
+
+test('年假配额保留小数、零和原始剩余值，缺少字段不推算为零', () => {
+  const result = normalizeQuota([{
+    employeeId: { valueId: 42 }, secret: 'hidden',
+    annualLeave: { baseNum: '80', initNum: 66, usedNum: 35.5, availableNum: 30.5, expirationDate: '2027-06-30 00:00:00' },
+    lastYearLeave: { extendedUsedNum: 80, extendedRemainNum: 0, extendedExpiryDate: '2026-06-30' },
+    beforeLastYearLeave: { extendedRemainNum: '', extendedUsedNum: false, extendedExpiryDate: '2025-02-30' },
+  }], '42', 2026);
+  assert.deepEqual(result.current, { year: 2026, total: 80, released: 66, used: 35.5, remaining: 30.5, expiresOn: '2027-06-30' });
+  assert.deepEqual(result.previous[0], { year: 2025, total: null, released: null, used: 80, remaining: 0, expiresOn: '2026-06-30' });
+  assert.equal(result.previous[1].year, 2024);
+  assert.equal(result.previous[1].used, null);
+  assert.equal(result.previous[1].remaining, null);
+  assert.equal(result.previous[1].expiresOn, null);
+  assert.ok(!JSON.stringify(result).includes('hidden'));
+  assert.deepEqual(normalizeQuota([], '42', 2026), { current: null, previous: [] });
+  assert.deepEqual(normalizeQuota([{}], '42', 2026), { current: null, previous: [] });
+  for (const rows of [null, [null], [{ employeeId: 99 }], [{}, {}]]) {
+    assert.throws(() => normalizeQuota(rows, '42', 2026));
+  }
 });

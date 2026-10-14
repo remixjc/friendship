@@ -183,6 +183,17 @@ export async function createHttpServer({ store, scheduler, attendance, env = pro
         return json(res, 200, { items: store.runs(userId, 20, (page - 1) * 20), page, total });
       }
       if (path === '/api/logs' && method === 'GET') return json(res, 200, { items: store.logs(userId) });
+      if (path === '/api/attendance/quota' && method === 'GET') {
+        rateLimit(`quota:${userId}`, 12);
+        const key = `quota:${userId}`;
+        if (reportRequests.has(key)) throw new AppError('年假查询正在进行，请稍后再试', 409);
+        reportRequests.add(key);
+        try {
+          const result = await attendance.quota(store.settings(userId, true));
+          if (store.getUser(userId)?.disabled || !authenticate(req)) throw new AppError('登录状态已失效，请重新登录', 401);
+          return json(res, 200, result);
+        } finally { reportRequests.delete(key); }
+      }
       if (path === '/api/attendance/records' && method === 'GET') {
         const query = reportQuery({
           month: url.searchParams.get('month') ?? localClock(new Date(), store.settings(userId).timezone).day.slice(0, 7),
@@ -202,7 +213,7 @@ export async function createHttpServer({ store, scheduler, attendance, env = pro
       }
       if (path === '/api/attendance/test-login' && method === 'POST') {
         rateLimit(`upstream:${userId}`, 6);
-        const result = await scheduler.withUser(userId, () => attendance.login(store.settings(userId, true)));
+        const result = await scheduler.withUser(userId, () => attendance.testLogin(store.settings(userId, true)));
         store.log(userId, 'info', 'test', '考勤账号登录测试成功');
         return json(res, 200, { employeeName: result.employeeName, message: '登录成功，未提交打卡' });
       }
@@ -237,7 +248,10 @@ export async function createHttpServer({ store, scheduler, attendance, env = pro
               if (input.disabled && target.role === 'admin'
                 && store.db.prepare("SELECT count(*) AS n FROM users WHERE role='admin' AND disabled=0").get().n <= 1) throw new AppError('至少保留一个有效管理员');
               store.db.prepare('UPDATE users SET disabled=? WHERE id=?').run(Number(input.disabled), targetId);
-              if (input.disabled) store.db.prepare('DELETE FROM sessions WHERE user_id=?').run(targetId);
+              if (input.disabled) {
+                store.db.prepare('DELETE FROM sessions WHERE user_id=?').run(targetId);
+                store.db.prepare('DELETE FROM upstream_sessions WHERE user_id=?').run(targetId);
+              }
             });
             store.log(userId, 'info', 'users', `${input.disabled ? '停用' : '启用'}用户 ${target.username}`);
             return json(res, 200, store.publicUser(store.getUser(targetId)));

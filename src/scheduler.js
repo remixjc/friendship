@@ -44,7 +44,7 @@ export function createScheduler(store, attendance, clock = () => new Date()) {
       store.log(id, 'info', 'run', `${trigger === 'scheduled' ? '定时' : '手动'}${dryRun ? '模拟' : '打卡'}开始`);
       let status, message, employeeName = '';
       try {
-        const result = await attendance.punch({ ...config, password: store.settings(id, true).password }, dryRun);
+        const result = await attendance.punch({ ...config, password: store.settings(id, true).password, userId: id }, dryRun);
         status = dryRun ? 'simulated' : 'success';
         message = result.message;
         employeeName = result.employeeName;

@@ -19,7 +19,7 @@ async function main() {
     validateAccount(input);
     store.createUser(input, await hashPassword(input.password), 'admin', true);
   }
-  const attendance = createAttendance();
+  const attendance = createAttendance(fetch, 12000, { store });
   const scheduler = createScheduler(store, attendance);
   const server = await createHttpServer({ store, scheduler, attendance });
   await new Promise((resolve, reject) => {
