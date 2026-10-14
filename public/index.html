@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#265b4b">
+    <title>FriendsShip · 考勤控制台</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/style.css">
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <div id="root"><div class="boot">FriendsShip<span>正在连接控制台…</span></div></div>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <dialog id="confirm-dialog">
+      <form method="dialog">
+        <span class="eyebrow">PLEASE CONFIRM</span>
+        <h2>确认提交真实打卡</h2>
+        <p>这会登录已配置的考勤账号，并向考勤系统提交一次打卡。请确认账号、坐标与地点正确。</p>
+        <div class="actions"><button class="button secondary" value="cancel">取消</button><button class="button primary" value="confirm">确认打卡</button></div>
+      </form>
+    </dialog>
+  </body>
+</html>

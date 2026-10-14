@@ -1,0 +1,15 @@
+{
+  "name": "friends-ship-node",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "FriendsShip Docker 考勤管理控制台",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test --test-concurrency=1",
+    "check": "node scripts/check.js"
+  },
+  "license": "MulanPSL-2.0"
+}
