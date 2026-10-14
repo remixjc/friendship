@@ -12,6 +12,7 @@
 - 默认任务关闭、模拟模式开启；提供模拟打卡、考勤登录测试和确认后手动真实打卡。
 - SQLite 持久化每日计划与执行状态；同一天同一时段的定时任务只提交一次。
 - 执行记录分页和运行日志，保留最近 90 天。
+- 查询真实考勤记录：按月份查看考勤明细、班次、打卡/休假等项目及月度汇总，支持明细和汇总各自分页。
 - 导入旧项目 `datas.json`。密码进入加密存储，不会回显或输出到日志。
 
 ## Docker 启动
@@ -83,13 +84,37 @@ header: X-Token: <登录取得的 token>
 body: {"data":{"longitude":"...","latitude":"...","punchSite":"...","punchWay":2,"employeeId":"...","extUserDevice":"..."}}
 ```
 
-登录响应要求 `content.body` 中包含 `token`、`employeeId.valueId`、`openId`，可选 `employeeName`。打卡响应在顶层、`content` 或 `content.body` 中出现 `success: true`，或 `code/statusCode` 为 `0`、`200`、`"0"`、`"200"`、`"0000"`，且没有明确失败标记时，才确认为成功。
+登录响应要求 `content.body` 中包含 `token`、`employeeId.valueId`、`openId`，可选 `employeeName`。打卡响应在顶层、`content` 或 `content.body` 中出现 `success: true`，或 `code/statusCode/msgCode` 为 `0`、`200`、`"0"`、`"200"`、`"0000"`，且没有明确失败标记时，才确认为成功。
 
 HTTP 成功但响应不明、提交后超时或网络中断会记为「结果待核对」，不会自动重试。请在考勤系统核对；如果实际接口的成功协议不同，需要调整 `src/attendance.js` 中的 `responseVerdict`。
 
 节假日接口兼容 `GET {holidayUrl}?date=yyyyMMdd`，读取 `data.list[0].workday` 的 `0/1` 值。上游请求超时 12 秒，拒绝自动跳转，响应限制 1MB。
 
 坐标保留原项目的正向随机偏移规则，默认最大 `0.0001` 度；设为 `0` 可关闭。地点在列表中均匀随机选择，全部地点均可被选择。
+
+### 考勤记录查询
+
+在「考勤记录」选择月份查询，使用当前用户个人配置中的考勤账号登录，并从登录响应取得 `employeeId` 和 token。查询使用 `X-Token`，请求原系统的两个接口：
+
+```text
+GET {apiBaseUrl}/api/workforce/timeCardInfo
+GET {apiBaseUrl}/api/workforce/timeCardAttendanceSummary
+
+参数：pageNum、pageSize、employeeId、dateRange
+dateRange：{"beginDate":"2026-10-01","endDate":"2026-10-31"}
+```
+
+每次查询只登录一次，随后并行获取明细和汇总。月份会自动计算月末，包括闰年。明细按日期分页，默认每页 20 个日期，展开每天全部 `timeAttendance` 项目；汇总每页 50 项，独立分页。接口需要成功状态和 `content.body` 列表、`content.totalCount` 总数；业务鉴权失败不会被当成空结果。
+
+实际开始/结束时间使用 `beginDateTime/endDateTime`；为空时展示「—」。`inTimeCardExtraAttendance/outTimeCardExtraAttendance.shouldPunchDateTime` 单独以灰色「计划」展示，不表示实际已打卡。年假等项目保留上游起止时间。时长和汇总直接展示上游值，例如 `43:01` 不会被转换为一天中的时刻或在本地重新计算。
+
+异常、加班、出差仅展示上游存在标记，当前未接入这些详情接口。未推测 `flag/dateType/status` 等未说明枚举的含义。
+
+明细或汇总单独失败时，保留另一部分结果并提示错误。查询独立于定时任务，模拟模式也可以查询真实考勤记录；查询仅执行登录与 GET，不提交打卡。没有本地考勤数据缓存，每次进入、刷新或翻页都会重新请求。token 和密码保留在后端，页面只接收展示所需字段；客户端无法指定其他员工 ID。
+
+移动端登录 token 是否拥有这两个查询接口的权限，需要在个人配置中填写自己的考勤账号后实测；若上游权限不足，页面明确提示查询被拒绝。
+
+本功能已通过 35 项自动化测试（含本机及 Docker Node.js 24 环境），以及使用模拟上游的桌面、手机浏览器验证：月份切换、分页、多项目、实际/计划时间区分、超过 24 小时的汇总、单接口失败、空数据和错误恢复。测试不会连接真实考勤服务或提交打卡。
 
 ## 本地开发
 
@@ -156,12 +181,15 @@ HTTPS 反向代理部署：配置 `APP_ORIGIN=https://attendance.example.com` �
 | `/api/settings/import` | POST | 导入旧 `datas.json` |
 | `/api/attendance/test-login` | POST | 测试考勤登录 |
 | `/api/attendance/run` | POST | 手动执行，`{"dryRun":true}` 为模拟 |
+| `/api/attendance/records?month=2026-10&page=1&pageSize=20&summaryPage=1` | GET | 当前账号的考勤明细及月度汇总 |
 | `/api/runs?page=1` | GET | 分页记录 |
 | `/api/logs` | GET | 最近 100 条日志 |
 | `/api/users` | GET / POST | 管理员查看、创建成员 |
 | `/api/users/:id` | PATCH | 管理员启用、停用成员 |
 
 写接口需携带登录返回的 `X-CSRF-Token` 和会话 Cookie，请求使用 JSON。`PUT /api/settings` 的空密码保持已保存密码；`clearPassword:true` 删除密码。
+
+考勤查询接口的 `month` 默认取用户配置时区的当前月份，`pageSize` 允许 1～50。返回 `records`、`summary` 两个分页对象（`items/total/page/pageSize`），以及 `recordsError/summaryError`；部分失败的对象为 `null`。员工 ID 由后端登录获取，忽略客户端传入的员工或用户 ID。每用户最多 12 次查询/分钟，禁止同用户同时发起多个查询。
 
 ## 目录
 
@@ -173,6 +201,7 @@ src/
   security.js    密码哈希与凭据加密
   config.js      配置校验与时间处理
   attendance.js  考勤、节假日接口适配
+  reports.js     月份查询校验与考勤展示字段转换
   scheduler.js   每日计划、去重与执行
 public/          中文网页控制台
 test/            自动化测试

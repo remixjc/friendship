@@ -1,5 +1,6 @@
 import { randomInt } from 'node:crypto';
 import { AppError, isWeekday } from './config.js';
+import { normalizeDays, normalizeSummary, reportQuery } from './reports.js';
 
 export class AttendanceError extends AppError {
   constructor(message, outcome = 'failed') {
@@ -46,7 +47,7 @@ export function createAttendance(fetchImpl = fetch, timeout = 12000) {
       if (!object || typeof object !== 'object') continue;
       if (object.success === false) return false;
       if (object.success === true) success = true;
-      for (const key of ['code', 'statusCode']) {
+      for (const key of ['code', 'statusCode', 'msgCode']) {
         if (Object.hasOwn(object, key)) {
           if (![0, 200, '0', '200', '0000'].includes(object[key])) return false;
           success = true;
@@ -90,6 +91,45 @@ export function createAttendance(fetchImpl = fetch, timeout = 12000) {
 
   return {
     login,
+    async report(config, input) {
+      const query = reportQuery(input);
+      const account = await login(config);
+      async function list(endpoint, page, pageSize, normalize) {
+        const url = new URL(`/api/workforce/${endpoint}`, config.apiBaseUrl);
+        url.searchParams.set('pageNum', String(page));
+        url.searchParams.set('pageSize', String(pageSize));
+        // The client cannot choose another employee, even if it passes employeeId.
+        url.searchParams.set('employeeId', account.employeeId);
+        url.searchParams.set('dateRange', JSON.stringify(query.dateRange));
+        const result = await request(url, { method: 'GET', headers: { 'X-Token': account.token } });
+        if (responseVerdict(result) !== true) {
+          throw new AttendanceError('考勤查询被拒绝或响应状态不兼容，请检查账号查询权限');
+        }
+        const { body, totalCount } = result.content || {};
+        const total = typeof totalCount === 'string' && /^\d+$/.test(totalCount) ? Number(totalCount) : totalCount;
+        if (!Array.isArray(body) || body.length > pageSize || !Number.isSafeInteger(total) || total < 0 || total < body.length) {
+          throw new AttendanceError('考勤查询的列表或分页格式不兼容');
+        }
+        return { items: normalize(body), total, page, pageSize };
+      }
+      const results = await Promise.allSettled([
+        list('timeCardInfo', query.page, query.pageSize, rows => normalizeDays(rows, account.employeeId, query.month)),
+        list('timeCardAttendanceSummary', query.summaryPage, 50, rows => normalizeSummary(rows, account.employeeId)),
+      ]);
+      const safeError = error => error instanceof AppError ? error.message : '考勤查询失败，请稍后重试';
+      if (results.every(result => result.status === 'rejected')) {
+        throw new AttendanceError(safeError(results[0].reason));
+      }
+      return {
+        month: query.month, dateRange: query.dateRange,
+        employeeName: account.employeeName,
+        records: results[0].status === 'fulfilled' ? results[0].value : null,
+        summary: results[1].status === 'fulfilled' ? results[1].value : null,
+        recordsError: results[0].status === 'rejected' ? safeError(results[0].reason) : null,
+        summaryError: results[1].status === 'rejected' ? safeError(results[1].reason) : null,
+        queriedAt: new Date().toISOString(),
+      };
+    },
     async punch(config, dryRun) {
       const point = location(config);
       if (dryRun) return { employeeName: config.username || '模拟账号', message: `模拟完成：${point.punchSite}（${point.longitude}, ${point.latitude}），未调用考勤接口` };

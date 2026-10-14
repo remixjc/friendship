@@ -72,3 +72,72 @@ test('工作日识别调休、手动覆盖，接口失败默认跳过', async ()
   assert.equal((await down.workday(holiday, '2026-10-14')).workday, false);
   assert.equal((await down.workday({ ...holiday, holidayFallback: 'weekdays' }, '2026-10-14')).workday, true);
 });
+
+test('msgCode 兼容登录和真实打卡成功，冲突失败标记优先', async () => {
+  let count = 0;
+  const api = createAttendance(async () => response(++count === 1
+    ? { ...loginResponse, msgCode: 200 } : { msgCode: 200 }));
+  assert.match((await api.punch(config, false)).message, /成功/);
+  const rejected = createAttendance(async () => response({ ...loginResponse, msgCode: 401, success: true }));
+  await assert.rejects(() => rejected.login(config), /登录失败/);
+});
+
+test('查询只登录一次，携带 token 和动态员工 ID，明细和汇总按各自页码请求', async () => {
+  const requests = [];
+  const api = createAttendance(async (url, options) => {
+    requests.push({ url: String(url), options });
+    if (String(url).endsWith('/login')) return response({ ...loginResponse, msgCode: 200 });
+    const summary = String(url).includes('Summary');
+    return response({ msgCode: 200, content: { totalCount: summary ? 51 : 22, body: summary
+      ? [{ attendanceName: '年假', totalNum: '08:00', employeeId: { valueId: 42 } }]
+      : [{ scheduleDate: '2026-10-01', employeeId: 42, timeAttendance: [] }] } });
+  });
+  const result = await api.report(config, { month: '2026-10', page: 2, pageSize: 20, summaryPage: 2 });
+  assert.equal(requests.length, 3);
+  for (const req of requests.slice(1)) {
+    const url = new URL(req.url);
+    assert.equal(req.options.method, 'GET');
+    assert.equal(req.options.headers['X-Token'], 'test-token');
+    assert.equal(url.searchParams.get('employeeId'), '42');
+    assert.equal(url.searchParams.get('pageNum'), '2');
+    assert.deepEqual(JSON.parse(url.searchParams.get('dateRange')), { beginDate: '2026-10-01', endDate: '2026-10-31' });
+  }
+  assert.equal(new URL(requests[1].url).searchParams.get('pageSize'), '20');
+  assert.equal(new URL(requests[2].url).searchParams.get('pageSize'), '50');
+  assert.equal(result.records.page, 2);
+  assert.equal(result.summary.page, 2);
+  assert.ok(!JSON.stringify(result).includes('test-token'));
+  assert.ok(!JSON.stringify(result).includes(config.password));
+});
+
+test('单个查询失败时保留另一部分，业务鉴权失败不可误判为空列表', async () => {
+  for (const failed of ['timeCardInfo', 'timeCardAttendanceSummary']) {
+    const api = createAttendance(async url => {
+      if (String(url).endsWith('/login')) return response(loginResponse);
+      if (new URL(url).pathname.endsWith(failed)) return response({ msgCode: 403, msgText: 'sensitive-content', content: { body: [], totalCount: 0 } });
+      return response({ msgCode: 200, content: { body: [], totalCount: 0 } });
+    });
+    const result = await api.report(config, { month: '2026-10' });
+    const failedKey = failed === 'timeCardInfo' ? 'records' : 'summary';
+    const successKey = failed === 'timeCardInfo' ? 'summary' : 'records';
+    assert.equal(result[failedKey], null);
+    assert.match(result[`${failedKey}Error`], /查询被拒绝/);
+    assert.equal(result[successKey].total, 0);
+    assert.ok(!JSON.stringify(result).includes('sensitive-content'));
+  }
+});
+
+test('不兼容分页、两接口失败、员工数据不匹配和查询前无效参数均明确报错', async () => {
+  for (const result of [
+    { msgCode: 200, content: { body: {}, totalCount: 1 } },
+    { msgCode: 200, content: { body: [], totalCount: -1 } },
+    { msgCode: 200, content: { body: [], totalCount: 'NaN' } },
+    { msgCode: 200, content: { body: Array(51).fill({ scheduleDate: '2026-10-01' }), totalCount: 51 } },
+    { msgCode: 403 },
+  ]) {
+    const api = createAttendance(async url => response(String(url).endsWith('/login') ? loginResponse : result));
+    await assert.rejects(() => api.report(config, { month: '2026-10' }));
+  }
+  const noNetwork = createAttendance(async () => { throw new Error('unexpected network'); });
+  await assert.rejects(() => noNetwork.report(config, { month: '2026-13' }), /月份/);
+});

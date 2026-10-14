@@ -17,7 +17,8 @@ const icons = {
 };
 const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.clock}</svg>`;
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
-let state = { user: null, csrf: null, settings: null, page: 'dashboard', runsPage: 1, renderId: 0 };
+let state = { user: null, csrf: null, settings: null, page: 'dashboard', runsPage: 1, renderId: 0,
+  reportMonth: '', reportPage: 1, summaryPage: 1 };
 let toastTimer, refreshTimer;
 function toast(message, error = false) {
   const element = document.querySelector('#toast');
@@ -73,7 +74,7 @@ function showAuth(initialized) {
     finally { submit.disabled = false; }
   });
 }
-const pages = { dashboard: ['dashboard', '工作概览', 'Overview'], settings: ['settings', '个人配置', 'Configuration'], runs: ['clock', '执行记录', 'History'], logs: ['logs', '运行日志', 'Activity'], users: ['users', '用户管理', 'Members'], account: ['shield', '账号安全', 'Security'] };
+const pages = { dashboard: ['dashboard', '工作概览', 'Overview'], attendance: ['logs', '考勤记录', 'Attendance'], settings: ['settings', '个人配置', 'Configuration'], runs: ['clock', '执行记录', 'History'], logs: ['logs', '运行日志', 'Activity'], users: ['users', '用户管理', 'Members'], account: ['shield', '账号安全', 'Security'] };
 function shell() {
   root.innerHTML = `<div class="shell"><aside class="sidebar">${brand}<div class="nav-label">WORKSPACE</div><nav class="nav">${Object.entries(pages).filter(([key]) => key !== 'users' || state.user.role === 'admin').map(([key, [name, title]]) => `<a href="#${key}" data-page="${key}">${icon(name)}${title}</a>`).join('')}</nav><div class="sidebar-bottom"><div class="side-note"><strong>每一次执行，都有迹可循。</strong><p>计划和结果持久保存，随时了解<br>你的考勤任务运行情况。</p></div><div class="profile"><span class="avatar">${escape(state.user.displayName.slice(0, 1).toUpperCase())}</span><div class="profile-info"><strong>${escape(state.user.displayName)}</strong><span>${state.user.role === 'admin' ? '管理员' : '成员'}</span></div><button class="logout" data-action="logout" aria-label="退出登录">${icon('logout')}</button></div></div></aside><main class="main"><header class="topbar"><div>工作空间 <span> / </span><strong id="breadcrumb">工作概览</strong></div><div class="topbar-right"><span class="online">服务运行中</span><span class="profile-mobile">${escape(state.user.displayName)}<button data-action="logout">退出</button></span><span id="top-date"></span></div></header><div class="content" id="content"></div></main></div>`;
   root.addEventListener('click', onClick);
@@ -85,6 +86,39 @@ function empty(message) { return `<div class="empty">${icon('logs')}${message}</
 function runsTable(runs) {
   if (!runs.length) return empty('还没有执行记录<br>先完成配置，再试一次模拟打卡。');
   return `<div class="table-wrap"><table><thead><tr><th>执行时间</th><th>任务</th><th>状态</th><th>结果说明</th></tr></thead><tbody>${runs.map(run => `<tr><td class="time">${dateFormat(run.created_at)}</td><td>${run.trigger === 'manual' ? '手动执行' : run.slot === 'am' ? '上午打卡' : '下午打卡'}</td><td>${runBadge(run.status)}</td><td class="message">${escape(run.message || '等待接口响应…')}</td></tr>`).join('')}</tbody></table></div>`;
+}
+function attendanceMonth() {
+  const parts = new Intl.DateTimeFormat('en', { timeZone: state.settings.timezone, year: 'numeric', month: '2-digit' }).formatToParts(new Date());
+  return `${parts.find(part => part.type === 'year').value}-${parts.find(part => part.type === 'month').value}`;
+}
+function reportPagination(data, prefix, noun) {
+  if (!data) return '';
+  const pages = Math.max(1, Math.ceil(data.total / data.pageSize));
+  return `<div class="pagination"><span>共 ${data.total} ${noun} · 第 ${data.page} / ${pages} 页</span><div class="actions"><button class="button secondary" data-action="${prefix}-prev" ${data.page <= 1 ? 'disabled' : ''}>上一页</button><button class="button secondary" data-action="${prefix}-next" ${data.page >= pages ? 'disabled' : ''}>下一页</button></div></div>`;
+}
+function attendanceTime(actual, planned, day) {
+  const short = value => value?.startsWith(`${day} `) ? value.slice(11) : value;
+  return `<span class="actual-time">${actual ? escape(short(actual)) : '—'}</span>${planned ? `<small class="planned-time">计划 ${escape(short(planned))}</small>` : ''}`;
+}
+function attendanceTable(data) {
+  if (!data.items.length) return empty('这个月份暂无考勤明细。');
+  return `<div class="table-wrap"><table class="attendance-table"><thead><tr><th>日期 / 班次</th><th>考勤项目</th><th>时长</th><th>实际开始时间</th><th>实际结束时间</th><th>标记</th></tr></thead><tbody>${data.items.map(day => {
+    const items = day.items.length ? day.items : [{ name: '暂无考勤项目' }];
+    const flags = [day.hasException ? badge('存在异常', 'error') : '', day.hasOvertime ? badge('存在加班', 'blue') : '', day.hasTravel ? badge('存在出差', 'blue') : ''].filter(Boolean).join(' ') || '—';
+    return items.map((item, index) => `<tr>${index === 0 ? `<td rowspan="${items.length}" class="attendance-day"><strong>${escape(day.date)}</strong><span>${escape(day.scheduleName || '暂无班次')}</span></td>` : ''}<td class="attendance-item">${escape(item.name || '未命名项目')}<span class="hint">${escape(item.type || '')}</span></td><td class="attendance-duration">${escape(item.duration ?? '—')}</td><td class="attendance-clock">${attendanceTime(item.begin, item.plannedBegin, day.date)}</td><td class="attendance-clock">${attendanceTime(item.end, item.plannedEnd, day.date)}</td>${index === 0 ? `<td rowspan="${items.length}" class="attendance-flags">${flags}</td>` : ''}</tr>`).join('');
+  }).join('')}</tbody></table></div>`;
+}
+function reportError(message) {
+  return `<div class="report-error" role="alert">${icon('logs')}<p>${escape(message)}</p><span>检查个人配置和考勤查询权限后重试。</span></div>`;
+}
+function attendanceView(data = null, error = null) {
+  const configured = state.settings.username && state.settings.company && state.settings.openId && state.settings.hasPassword;
+  return heading('考勤记录', '查看考勤系统中的实际明细与月度汇总。', button('刷新考勤', 'refresh', 'refresh'))
+    + `<section class="card report-filter"><form id="report-form"><label class="field"><span>查询月份</span><input name="month" type="month" min="1900-01" max="9999-12" value="${escape(state.reportMonth)}" required></label><button type="submit" class="button primary">${icon('logs')}查询考勤</button><p>${data ? `${escape(data.employeeName)} · 更新于 ${dateFormat(data.queriedAt)}` : '按个人配置中的考勤账号查询'}</p></form></section>`
+    + (!configured ? `<section class="card">${empty('请先在个人配置中填写公司、考勤账号、密码和 OpenID。')}<div class="report-config">${button('前往个人配置', 'settings', 'settings', 'primary')}</div></section>` : error ? `<section class="card">${reportError(error)}</section>` : data ? `
+      <section class="card report-summary"><div class="card-head"><h2>月度考勤汇总</h2><span>${escape(data.month)} · 按上游统计展示</span></div>${data.summaryError ? reportError(data.summaryError) : data.summary.items.length ? `<div class="summary-grid">${data.summary.items.map(item => `<article class="summary-item"><div><strong>${escape(item.name || '未命名项目')}</strong>${badge(item.type || '考勤汇总', 'gray')}</div><p>${escape(item.total ?? '—')}<small>${escape(item.unit || '')}</small></p></article>`).join('')}</div>${reportPagination(data.summary, 'summary', '项')}` : empty('这个月份暂无汇总数据。')}</section>
+      <section class="card"><div class="card-head"><h2>考勤明细</h2><span>同一天的多个考勤项目分别展示</span></div><div class="report-note">打卡项目的实际时间为空时显示「—」；下方灰色「计划」仅供参考，不表示已经打卡。休假等项目显示上游记录的起止时间。</div>${data.recordsError ? reportError(data.recordsError) : attendanceTable(data.records) + reportPagination(data.records, 'report', '个日期')}</section>
+      <div class="footer"><span>考勤查询仅获取记录，不会提交打卡。</span><span>时长与汇总采用上游值，不在本地重新计算。</span></div>` : '');
 }
 function dashboard(data) {
   const config = state.settings, plan = data.plan;
@@ -125,6 +159,20 @@ async function renderPage({ quiet = false } = {}) {
     } else if (page === 'settings') {
       state.settings = await api('/settings');
       markup = settingsView(state.settings);
+    } else if (page === 'attendance') {
+      const config = await api('/settings');
+      if (renderId !== state.renderId || !state.user) return;
+      state.settings = config;
+      state.reportMonth ||= attendanceMonth();
+      if (!config.username || !config.company || !config.openId || !config.hasPassword) {
+        markup = attendanceView();
+      } else {
+        try {
+          const query = new URLSearchParams({ month: state.reportMonth, page: state.reportPage, summaryPage: state.summaryPage });
+          const data = await api(`/attendance/records?${query}`);
+          markup = attendanceView(data);
+        } catch (error) { markup = attendanceView(null, error.message); }
+      }
     } else if (page === 'runs') {
       const data = await api(`/runs?page=${state.runsPage}`);
       markup = heading('执行记录', '查看每次模拟与真实打卡的结果。', button('刷新记录', 'refresh', 'refresh'))
@@ -152,6 +200,13 @@ async function renderPage({ quiet = false } = {}) {
   }
 }
 function attachForms() {
+  document.querySelector('#report-form')?.addEventListener('submit', event => {
+    event.preventDefault();
+    state.reportMonth = new FormData(event.target).get('month');
+    state.reportPage = 1;
+    state.summaryPage = 1;
+    void renderPage();
+  });
   const settingsForm = document.querySelector('#settings-form');
   settingsForm?.addEventListener('submit', async event => {
     event.preventDefault();
@@ -227,6 +282,7 @@ async function onClick(event) {
     if (action === 'logout') {
       await api('/auth/logout', { method: 'POST' });
       state.user = null; state.csrf = null; state.settings = null;
+      state.reportMonth = ''; state.reportPage = 1; state.summaryPage = 1;
       clearInterval(refreshTimer);
       root.removeEventListener('click', onClick);
       showAuth(true);
@@ -246,6 +302,10 @@ async function onClick(event) {
       document.querySelector('#import-file').click();
     } else if (action === 'prev-page' || action === 'next-page') {
       state.runsPage += action === 'prev-page' ? -1 : 1;
+      await renderPage();
+    } else if (['report-prev', 'report-next', 'summary-prev', 'summary-next'].includes(action)) {
+      const key = action.startsWith('report-') ? 'reportPage' : 'summaryPage';
+      state[key] = Math.max(1, state[key] + (action.endsWith('prev') ? -1 : 1));
       await renderPage();
     } else if (action === 'toggle-user') {
       await api(`/users/${element.dataset.id}`, { method: 'PATCH', body: { disabled: element.dataset.disabled !== 'true' } });

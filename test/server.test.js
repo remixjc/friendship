@@ -15,10 +15,22 @@ async function fixture(t) {
   const upstreamRequests = [];
   const apiBaseUrl = 'https://mock-attendance.example';
   const attendance = createAttendance(async (url, options) => {
-    const data = JSON.parse(options.body);
-    upstreamRequests.push({ url: new URL(url).pathname, data, headers: Object.fromEntries(Object.entries(options.headers).map(([key, value]) => [key.toLowerCase(), value])) });
+    const data = options.body ? JSON.parse(options.body) : null;
+    const parsed = new URL(url);
+    upstreamRequests.push({ url: parsed.pathname, query: Object.fromEntries(parsed.searchParams), data, headers: Object.fromEntries(Object.entries(options.headers).map(([key, value]) => [key.toLowerCase(), value])) });
+    if (parsed.pathname.includes('timeCard')) {
+      const user = options.headers['X-Token'].slice('private-token-'.length);
+      const summary = parsed.pathname.endsWith('Summary');
+      return new Response(JSON.stringify({ msgCode: 200, content: {
+        totalCount: 1, body: summary
+          ? [{ employeeId: { valueId: `employee-${user}` }, attendanceName: '出勤工时', totalNum: '43:01', calculateUnit: { valueName: '小时' } }]
+          : [{ scheduleDate: `${JSON.parse(parsed.searchParams.get('dateRange')).beginDate.slice(0, 7)}-14`, employeeId: `employee-${user}`, scheduleName: user,
+            timeAttendance: [{ attendanceName: '打卡', beginDateTime: null, endDateTime: null }] }],
+      } }));
+    }
+    const user = data?.data?.username;
     return new Response(JSON.stringify(url.endsWith('/login') ? {
-      content: { body: { token: 'private-token', employeeId: { valueId: 'e-1' }, openId: 'openid-from-server', employeeName: '示例员工' } },
+      content: { body: { token: `private-token-${user}`, employeeId: { valueId: `employee-${user}` }, openId: 'openid-from-server', employeeName: '示例员工' } },
     } : { code: 0, success: true }), { headers: { 'Content-Type': 'application/json' } });
   });
   const scheduler = createScheduler(store, attendance);
@@ -66,7 +78,7 @@ async function fixture(t) {
   const admin = client();
   const setup = await admin.request('/api/auth/setup', 'POST', { username: 'admin', password: 'test-admin-password', displayName: '管理员' });
   assert.equal(setup.status, 200);
-  return { store, admin, client, apiBaseUrl, upstreamRequests, origin, dispatch };
+  return { store, admin, client, apiBaseUrl, upstreamRequests, origin, dispatch, attendance, scheduler };
 }
 
 test('首次初始化、登录、退出、鉴权和 CSRF 校验', async t => {
@@ -109,8 +121,8 @@ test('完整流程：配置、加密、考勤登录、模拟、真实打卡、�
   assert.equal(real.data.status, 'success');
   assert.equal(f.upstreamRequests.length, before + 2);
   const request = f.upstreamRequests.at(-1);
-  assert.equal(request.headers['x-token'], 'private-token');
-  assert.equal(request.data.data.employeeId, 'e-1');
+  assert.equal(request.headers['x-token'], 'private-token-attendance-user');
+  assert.equal(request.data.data.employeeId, 'employee-attendance-user');
   const runs = await f.admin.request('/api/runs');
   assert.equal(runs.data.total, 2);
   assert.ok(!JSON.stringify(runs.data).includes(input.password));
@@ -177,4 +189,70 @@ test('health 与静态页面可用，路径遍历和未知接口无法读取文�
     assert.equal((await f.dispatch(path, 'GET', undefined, {})).status, 404);
   }
   assert.equal((await f.admin.request('/api/unknown')).status, 404);
+});
+
+test('考勤查询需要登录和个人配置，月份页码校验且不接受客户端员工 ID', async t => {
+  const f = await fixture(t);
+  assert.equal((await f.client().request('/api/attendance/records?month=2026-10')).status, 401);
+  assert.equal((await f.admin.request('/api/attendance/records?month=2026-10')).status, 400);
+  await f.admin.request('/api/settings', 'PUT', { apiBaseUrl: f.apiBaseUrl, username: 'personal-account', password: 'test-only-password', openId: 'personal-openid' });
+  for (const query of ['month=2026-13', 'month=bad', 'month=2026-10&page=1.5', 'month=2026-10&pageSize=51', 'month=2026-10&summaryPage=0']) {
+    assert.equal((await f.admin.request(`/api/attendance/records?${query}`)).status, 400);
+  }
+  const result = await f.admin.request('/api/attendance/records?month=2026-10&employeeId=999&userId=other-user');
+  assert.equal(result.status, 200);
+  assert.equal(result.data.records.items[0].scheduleName, 'personal-account');
+  assert.equal(result.data.summary.items[0].total, '43:01');
+  assert.equal(result.headers.get('cache-control'), 'no-store');
+  assert.ok(!JSON.stringify(result.data).includes('private-token'));
+  assert.ok(!JSON.stringify(result.data).includes('test-only-password'));
+  const queryRequests = f.upstreamRequests.filter(req => req.url.includes('timeCard'));
+  assert.equal(queryRequests.length, 2);
+  assert.ok(queryRequests.every(req => req.query.employeeId === 'employee-personal-account'));
+  assert.equal((await f.admin.request('/api/runs')).data.total, 0);
+});
+
+test('成员只能查询自己考勤账号的记录，管理员也无法通过参数查询其他用户', async t => {
+  const f = await fixture(t);
+  await f.admin.request('/api/settings', 'PUT', { apiBaseUrl: f.apiBaseUrl, username: 'admin-attendance', password: 'test-admin-upstream', openId: 'test-openid' });
+  await f.admin.request('/api/users', 'POST', { username: 'member', password: 'member-test-password', role: 'user' });
+  const member = f.client();
+  await member.request('/api/auth/login', 'POST', { username: 'member', password: 'member-test-password' });
+  await member.request('/api/settings', 'PUT', { apiBaseUrl: f.apiBaseUrl, username: 'member-attendance', password: 'test-member-upstream', openId: 'test-openid' });
+  const own = await member.request('/api/attendance/records?month=2026-10&employeeId=employee-admin-attendance');
+  assert.equal(own.status, 200);
+  assert.equal(own.data.records.items[0].scheduleName, 'member-attendance');
+  const admin = await f.admin.request('/api/attendance/records?month=2026-10&employeeId=employee-member-attendance');
+  assert.equal(admin.data.records.items[0].scheduleName, 'admin-attendance');
+});
+
+test('考勤查询拒绝同用户并发，但不占用调度锁；失败后允许重新查询', async t => {
+  const f = await fixture(t);
+  let release, started;
+  const ready = new Promise(resolve => { started = resolve; });
+  f.attendance.report = () => new Promise(resolve => { release = resolve; started(); });
+  const first = f.admin.request('/api/attendance/records?month=2026-10');
+  await ready;
+  assert.equal(f.scheduler.busy, 0);
+  assert.equal((await f.admin.request('/api/attendance/records?month=2026-10')).status, 409);
+  release({ month: '2026-10' });
+  assert.equal((await first).status, 200);
+  f.attendance.report = async () => { throw new Error('secret internal error'); };
+  assert.equal((await f.admin.request('/api/attendance/records?month=2026-10')).status, 500);
+  f.attendance.report = async () => ({ month: '2026-10' });
+  assert.equal((await f.admin.request('/api/attendance/records?month=2026-10')).status, 200);
+});
+
+test('查询等待期间注销会话后，不向已注销会话返回考勤结果', async t => {
+  const f = await fixture(t);
+  let release, started;
+  const ready = new Promise(resolve => { started = resolve; });
+  f.attendance.report = () => new Promise(resolve => { release = resolve; started(); });
+  const first = f.admin.request('/api/attendance/records?month=2026-10');
+  await ready;
+  await f.admin.request('/api/auth/logout', 'POST');
+  release({ privateData: 'must-not-be-returned' });
+  const result = await first;
+  assert.equal(result.status, 401);
+  assert.ok(!JSON.stringify(result.data).includes('must-not-be-returned'));
 });

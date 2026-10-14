@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { AppError, defaults, importLegacy, localClock, validateSettings } from './config.js';
 import { hashPassword, newToken, tokenHash, validateAccount, validatePassword, verifyPassword } from './security.js';
+import { reportQuery } from './reports.js';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const assets = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'], '/favicon.svg': ['favicon.svg', 'image/svg+xml'] };
@@ -13,6 +14,7 @@ const sessionDuration = 7 * 86400000;
 export async function createHttpServer({ store, scheduler, attendance, env = process.env }) {
   const dummyHash = await hashPassword(randomBytes(32).toString('hex'));
   const rateLimits = new Map();
+  const reportRequests = new Set();
   let authInFlight = 0;
   function rateLimit(key, max, window = 60000) {
     const now = Date.now();
@@ -181,6 +183,23 @@ export async function createHttpServer({ store, scheduler, attendance, env = pro
         return json(res, 200, { items: store.runs(userId, 20, (page - 1) * 20), page, total });
       }
       if (path === '/api/logs' && method === 'GET') return json(res, 200, { items: store.logs(userId) });
+      if (path === '/api/attendance/records' && method === 'GET') {
+        const query = reportQuery({
+          month: url.searchParams.get('month') ?? localClock(new Date(), store.settings(userId).timezone).day.slice(0, 7),
+          page: Number(url.searchParams.get('page') ?? 1),
+          pageSize: Number(url.searchParams.get('pageSize') ?? 20),
+          summaryPage: Number(url.searchParams.get('summaryPage') ?? 1),
+        });
+        rateLimit(`report:${userId}`, 12);
+        if (reportRequests.has(userId)) throw new AppError('考勤查询正在进行，请稍后再试', 409);
+        reportRequests.add(userId);
+        try {
+          // Read-only queries use their own lock so they cannot delay scheduled punches.
+          const result = await attendance.report(store.settings(userId, true), query);
+          if (store.getUser(userId)?.disabled || !authenticate(req)) throw new AppError('登录状态已失效，请重新登录', 401);
+          return json(res, 200, result);
+        } finally { reportRequests.delete(userId); }
+      }
       if (path === '/api/attendance/test-login' && method === 'POST') {
         rateLimit(`upstream:${userId}`, 6);
         const result = await scheduler.withUser(userId, () => attendance.login(store.settings(userId, true)));
