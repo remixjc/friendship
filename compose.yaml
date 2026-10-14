@@ -17,7 +17,7 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
     volumes:
-      - friends-ship-data:/app/data
+      - ./data:/app/data
     read_only: true
     tmpfs:
       - /tmp
@@ -26,6 +26,3 @@ services:
     security_opt:
       - no-new-privileges:true
     stop_grace_period: 35s
-
-volumes:
-  friends-ship-data:
