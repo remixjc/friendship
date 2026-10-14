@@ -7,6 +7,8 @@ export class AppError extends Error {
   }
 }
 
+export const legacyHolidayUrl = 'https://api.apihubs.cn/holiday/get';
+
 export const defaults = {
   enabled: false,
   dryRun: true,
@@ -24,7 +26,7 @@ export const defaults = {
   openId: '',
   source: 5,
   apiBaseUrl: 'https://kaoqin.wanji.net.cn',
-  holidayUrl: 'https://api.apihubs.cn/holiday/get',
+  holidayUrl: 'https://timor.tech/api/holiday/info/{date}',
   longitude: 116.295660,
   latitude: 40.049682,
   coordinateJitter: 0.0001,

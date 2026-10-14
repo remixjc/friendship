@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createAttendance } from '../src/attendance.js';
-import { defaults } from '../src/config.js';
+import { defaults, legacyHolidayUrl } from '../src/config.js';
 
 const config = { ...defaults, username: 'test-user', password: 'only-test-password', openId: 'test-openid' };
 const response = json => new Response(JSON.stringify(json), { headers: { 'Content-Type': 'application/json' } });
@@ -64,7 +64,7 @@ test('工作日识别调休、手动覆盖，接口失败默认跳过', async ()
     assert.equal(new URL(url).searchParams.get('date'), '20261010');
     return response({ data: { list: [{ workday: 1 }] } });
   });
-  const holiday = { ...config, workdayMode: 'holiday' };
+  const holiday = { ...config, holidayUrl: legacyHolidayUrl, workdayMode: 'holiday' };
   assert.equal((await api.workday(holiday, '2026-10-10')).workday, true);
   assert.equal((await api.workday({ ...holiday, workdayOverrides: { '2026-10-10': 0 } }, '2026-10-10')).workday, false);
   assert.equal(count, 1);

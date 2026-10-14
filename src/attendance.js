@@ -2,6 +2,7 @@ import { randomInt } from 'node:crypto';
 import { AppError, isWeekday, localClock } from './config.js';
 import { normalizeDays, normalizeSummary, normalizeQuota, reportQuery } from './reports.js';
 import { createUpstreamSessions, UpstreamAuthError } from './upstream-session.js';
+import { createHolidayCalendar } from './holidays.js';
 
 export class AttendanceError extends AppError {
   constructor(message, outcome = 'failed') {
@@ -11,6 +12,7 @@ export class AttendanceError extends AppError {
 }
 
 export function createAttendance(fetchImpl = fetch, timeout = 12000, { store, clock = Date.now } = {}) {
+  const calendar = createHolidayCalendar(store, clock);
   const memory = new Map();
   const sessions = createUpstreamSessions(store || {
     loadUpstreamSession: id => memory.get(id),
@@ -210,12 +212,7 @@ export function createAttendance(fetchImpl = fetch, timeout = 12000, { store, cl
       }
       if (config.workdayMode === 'weekdays') return { workday: isWeekday(day), source: '周一至周五' };
       try {
-        const url = new URL(config.holidayUrl);
-        url.searchParams.set('date', day.replaceAll('-', ''));
-        const result = await request(url);
-        const value = result?.data?.list?.[0]?.workday;
-        if (![0, 1, '0', '1'].includes(value)) throw new Error('invalid workday');
-        return { workday: String(value) === '1', source: '节假日接口' };
+        return await calendar.get(config.holidayUrl, day, url => request(url));
       } catch {
         return {
           workday: config.holidayFallback === 'weekdays' && isWeekday(day),

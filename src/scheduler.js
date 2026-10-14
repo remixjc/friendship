@@ -19,20 +19,22 @@ export function createScheduler(store, attendance, clock = () => new Date()) {
     async ensurePlan(id, config = store.settings(id), now = clock()) {
       const { day, time } = localClock(now, config.timezone);
       let plan = store.plan(id, day);
-      if (plan && plan.revision === config.revision) return plan;
+      if (plan && plan.revision === config.revision && !plan.refresh_workday) return plan;
       if (time < config.freshDate) return null;
+      const calendarOnly = plan?.revision === config.revision && Boolean(plan.refresh_workday);
       const work = await attendance.workday(config, day);
       plan = {
-        user_id: id, day, am: randomTime(config.amStart, config.amEnd),
-        pm: randomTime(config.pmStart, config.pmEnd), workday: Number(work.workday),
+        user_id: id, day, am: calendarOnly ? plan.am : randomTime(config.amStart, config.amEnd),
+        pm: calendarOnly ? plan.pm : randomTime(config.pmStart, config.pmEnd), workday: Number(work.workday),
         source: work.source, revision: config.revision, created_at: now.toISOString(),
       };
       store.db.prepare(`INSERT INTO plans(user_id,day,am,pm,workday,source,revision,created_at)
         VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(user_id,day) DO UPDATE SET
         am=excluded.am,pm=excluded.pm,workday=excluded.workday,source=excluded.source,
-        revision=excluded.revision,created_at=excluded.created_at`)
+        revision=excluded.revision,created_at=excluded.created_at,refresh_workday=0`)
         .run(id, day, plan.am, plan.pm, plan.workday, plan.source, plan.revision, plan.created_at);
-      store.log(id, work.warning ? 'warn' : 'info', 'plan', `${day}：${plan.am} / ${plan.pm}；${work.source}；${work.workday ? '工作日' : '休息日'}`);
+      const state = work.source === '接口失败，跳过今日任务' ? '工作日未确定，已跳过' : work.workday ? '工作日' : '休息日';
+      store.log(id, work.warning ? 'warn' : 'info', 'plan', `${day}：${plan.am} / ${plan.pm}；${work.source}；${state}`);
       return plan;
     },
     async execute(id, config, { day, slot, trigger, dryRun }) {
