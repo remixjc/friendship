@@ -12,6 +12,7 @@ const icons = {
   check: '<path d="m5 12 4 4L19 6"/>',
   play: '<path d="m8 4 12 8-12 8Z"/>',
   arrow: '<path d="M5 12h14M14 7l5 5-5 5"/>',
+  more: '<circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.4" fill="currentColor" stroke="none"/>',
   refresh: '<path d="M20 8V3l-3 3a8 8 0 1 0 3 8M20 8h-5"/>',
   shield: '<path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z"/><path d="m8 12 3 3 5-5"/>',
 };
@@ -75,9 +76,22 @@ function showAuth(initialized) {
   });
 }
 const pages = { dashboard: ['dashboard', '工作概览', 'Overview'], attendance: ['logs', '考勤记录', 'Attendance'], quota: ['sun', '年假配额', 'Leave quota'], settings: ['settings', '个人配置', 'Configuration'], runs: ['clock', '执行记录', 'History'], logs: ['logs', '运行日志', 'Activity'], users: ['users', '用户管理', 'Members'], account: ['shield', '账号安全', 'Security'] };
+const mobilePrimaryPages = new Set(['dashboard', 'attendance', 'runs', 'settings']);
+const mobileMorePages = new Set(['quota', 'logs', 'users', 'account']);
 function shell() {
-  root.innerHTML = `<div class="shell"><aside class="sidebar">${brand}<div class="nav-label">WORKSPACE</div><nav class="nav">${Object.entries(pages).filter(([key]) => key !== 'users' || state.user.role === 'admin').map(([key, [name, title]]) => `<a href="#${key}" data-page="${key}">${icon(name)}${title}</a>`).join('')}</nav><div class="sidebar-bottom"><div class="side-note"><strong>每一次执行，都有迹可循。</strong><p>计划和结果持久保存，随时了解<br>你的考勤任务运行情况。</p></div><div class="profile"><span class="avatar">${escape(state.user.displayName.slice(0, 1).toUpperCase())}</span><div class="profile-info"><strong>${escape(state.user.displayName)}</strong><span>${state.user.role === 'admin' ? '管理员' : '成员'}</span></div><button class="logout" data-action="logout" aria-label="退出登录">${icon('logout')}</button></div></div></aside><main class="main"><header class="topbar"><div>工作空间 <span> / </span><strong id="breadcrumb">工作概览</strong></div><div class="topbar-right"><span class="online">服务运行中</span><span class="profile-mobile">${escape(state.user.displayName)}<button data-action="logout">退出</button></span><span id="top-date"></span></div></header><div class="content" id="content"></div></main></div>`;
+  const visiblePages = Object.entries(pages).filter(([key]) => key !== 'users' || state.user.role === 'admin');
+  const navLinks = visiblePages.map(([key, [name, title]]) => `<a href="#${key}" data-page="${key}">${icon(name)}${title}</a>`).join('');
+  const moreLinks = visiblePages.filter(([key]) => mobileMorePages.has(key)).map(([key, [name, title]]) => `<a href="#${key}" data-page="${key}">${icon(name)}<span>${title}</span><span class="mobile-more-arrow">›</span></a>`).join('');
+  root.innerHTML = `<div class="shell"><aside class="sidebar">${brand}<div class="nav-label">WORKSPACE</div><nav class="nav">${navLinks}</nav><button class="mobile-more" type="button" data-action="mobile-more" aria-expanded="false">${icon('more')}<span>更多</span></button><div class="sidebar-bottom"><div class="side-note"><strong>每一次执行，都有迹可循。</strong><p>计划和结果持久保存，随时了解<br>你的考勤任务运行情况。</p></div><div class="profile"><span class="avatar">${escape(state.user.displayName.slice(0, 1).toUpperCase())}</span><div class="profile-info"><strong>${escape(state.user.displayName)}</strong><span>${state.user.role === 'admin' ? '管理员' : '成员'}</span></div><button class="logout" data-action="logout" aria-label="退出登录">${icon('logout')}</button></div></div></aside><main class="main"><header class="topbar"><div>工作空间 <span> / </span><strong id="breadcrumb">工作概览</strong></div><div class="topbar-right"><span class="online">服务运行中</span><span class="profile-mobile">${escape(state.user.displayName)}<button data-action="logout">退出</button></span><span id="top-date"></span></div></header><div class="content" id="content"></div></main></div><div class="mobile-more-panel" hidden aria-hidden="true"><button class="mobile-more-backdrop" type="button" data-action="mobile-more" aria-label="关闭更多菜单"></button><section class="mobile-more-card" role="dialog" aria-label="更多功能"><div class="mobile-more-head"><div><span class="eyebrow">WORKSPACE</span><h2>更多功能</h2></div><button class="mobile-more-close" type="button" data-action="mobile-more">关闭</button></div><nav class="mobile-more-nav">${moreLinks}</nav><button class="mobile-more-logout" type="button" data-action="logout">${icon('logout')}退出登录</button></section></div>`;
   root.addEventListener('click', onClick);
+}
+function setMobileMore(open) {
+  const panel = document.querySelector('.mobile-more-panel');
+  if (!panel) return;
+  panel.hidden = !open;
+  panel.setAttribute('aria-hidden', String(!open));
+  document.body.classList.toggle('mobile-menu-open', open);
+  document.querySelector('.mobile-more')?.setAttribute('aria-expanded', String(open));
 }
 function heading(title, subtitle, actions = '') {
   return `<div class="page-heading"><div><span class="eyebrow">${pages[state.page]?.[2].toUpperCase() || 'WORKSPACE'}</span><h1>${title}</h1><p>${subtitle}</p></div><div class="actions">${actions}</div></div>`;
@@ -298,16 +312,21 @@ async function confirmRealRun() {
   return new Promise(resolve => dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), { once: true }));
 }
 async function onClick(event) {
+  if (event.target.closest('.mobile-more-panel a')) setMobileMore(false);
   const element = event.target.closest('[data-action]');
   if (!element || element.disabled) return;
   const action = element.dataset.action;
   element.disabled = true;
   try {
-    if (action === 'logout') {
+    if (action === 'mobile-more') {
+      const panel = document.querySelector('.mobile-more-panel');
+      setMobileMore(Boolean(panel?.hidden));
+    } else if (action === 'logout') {
       await api('/auth/logout', { method: 'POST' });
       state.user = null; state.csrf = null; state.settings = null;
       state.reportMonth = ''; state.reportPage = 1; state.summaryPage = 1;
       clearInterval(refreshTimer);
+      setMobileMore(false);
       root.removeEventListener('click', onClick);
       showAuth(true);
     } else if (action === 'settings') {
@@ -351,6 +370,7 @@ async function enterApp() {
 }
 window.addEventListener('hashchange', () => {
   if (!state.user) return;
+  setMobileMore(false);
   state.page = location.hash.slice(1) || 'dashboard';
   void renderPage();
 });
