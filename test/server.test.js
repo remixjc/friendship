@@ -18,6 +18,16 @@ async function fixture(t) {
     const data = options.body ? JSON.parse(options.body) : null;
     const parsed = new URL(url);
     upstreamRequests.push({ url: parsed.pathname, query: Object.fromEntries(parsed.searchParams), data, headers: Object.fromEntries(Object.entries(options.headers).map(([key, value]) => [key.toLowerCase(), value])) });
+    if (parsed.pathname === '/api/workforce/punchInfo') {
+      const user = options.headers['X-Token'].slice('private-token-'.length);
+      return new Response(JSON.stringify({ msgCode: 200, content: { totalCount: 21, body: [{
+        employeeId: `employee-${user}`, punchDateTime: '2026-11-27 08:45:00',
+        punchWay: { valueName: '移动打卡' }, extUserDevice: 'private-device',
+      }] } }));
+    }
+    if (parsed.pathname === '/api/workforce/travelInfo') {
+      return new Response(JSON.stringify({ msgCode: 200, content: { totalCount: null, body: null } }));
+    }
     if (parsed.pathname.endsWith('/attendanceSummary')) {
       const user = options.headers['X-Token'].slice('private-token-'.length);
       return new Response(JSON.stringify({ msgCode: 200, content: { body: [{
@@ -338,6 +348,32 @@ test('年假接口需要登录和配置，员工 ID 来自个人账号且与考�
   const query = f.upstreamRequests.find(req => req.url.endsWith('/attendanceSummary'));
   assert.equal(query.query.employeeId, 'employee-quota-account');
   assert.equal(JSON.parse(query.query.filter).fieldValue, 'employee-quota-account');
+  assert.equal((await f.admin.request('/api/runs')).data.total, 0);
+});
+
+test('考勤查询验证类型和月份，按登录员工分页，并区分上游空列表与查询失败', async t => {
+  const f = await fixture(t);
+  const path = '/api/attendance/lookup';
+  assert.equal((await f.client().request(`${path}?type=punches`)).status, 401);
+  for (const query of ['type=__proto__', 'type=punches&month=2026-13', 'type=schedule&page=2']) {
+    assert.equal((await f.admin.request(`${path}?${query}`)).status, 400);
+  }
+  await f.admin.request('/api/settings', 'PUT', { apiBaseUrl: f.apiBaseUrl, username: 'lookup-account', password: 'test-upstream-password', openId: 'personal-openid' });
+  const punches = await f.admin.request(`${path}?type=punches&month=2026-11&page=2&employeeId=someone-else`);
+  assert.equal(punches.status, 200);
+  assert.equal(punches.headers.get('cache-control'), 'no-store');
+  assert.equal(punches.data.page, 2);
+  assert.equal(punches.data.total, 21);
+  assert.equal(punches.data.items[0].title, '2026-11-27 08:45:00');
+  assert.ok(!JSON.stringify(punches.data).includes('private-'));
+  const request = f.upstreamRequests.find(({ url }) => url.endsWith('/punchInfo'));
+  assert.equal(request.query.employeeId, 'employee-lookup-account');
+  assert.equal(request.query.pageNum, '2');
+  assert.deepEqual(JSON.parse(request.query.dateRange), { beginDate: '2026-11-01', endDate: '2026-11-30' });
+  const travel = await f.admin.request(`${path}?type=travel&month=2026-11`);
+  assert.equal(travel.status, 200);
+  assert.deepEqual(travel.data.items, []);
+  assert.equal(f.upstreamRequests.filter(({ url }) => url.endsWith('/login')).length, 1);
   assert.equal((await f.admin.request('/api/runs')).data.total, 0);
 });
 

@@ -14,12 +14,13 @@ const icons = {
   arrow: '<path d="M5 12h14M14 7l5 5-5 5"/>',
   more: '<circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.4" fill="currentColor" stroke="none"/>',
   refresh: '<path d="M20 8V3l-3 3a8 8 0 1 0 3 8M20 8h-5"/>',
+  search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/>',
   shield: '<path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z"/><path d="m8 12 3 3 5-5"/>',
 };
 const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.clock}</svg>`;
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 let state = { user: null, csrf: null, settings: null, page: 'dashboard', runsPage: 1, renderId: 0,
-  reportMonth: '', reportPage: 1, summaryPage: 1 };
+  reportMonth: '', reportPage: 1, summaryPage: 1, lookupMonth: '', lookupType: 'punches', lookupPage: 1, lookupSearch: '' };
 let toastTimer, refreshTimer;
 function toast(message, error = false) {
   const element = document.querySelector('#toast');
@@ -75,8 +76,23 @@ function showAuth(initialized) {
     finally { submit.disabled = false; }
   });
 }
-const pages = { dashboard: ['dashboard', '工作概览', 'Overview'], attendance: ['logs', '考勤记录', 'Attendance'], quota: ['sun', '年假配额', 'Leave quota'], settings: ['settings', '个人配置', 'Configuration'], runs: ['clock', '执行记录', 'History'], logs: ['logs', '运行日志', 'Activity'], users: ['users', '用户管理', 'Members'], account: ['shield', '账号安全', 'Security'] };
+const pages = { dashboard: ['dashboard', '工作概览', 'Overview'], attendance: ['logs', '考勤记录', 'Attendance'], lookup: ['search', '考勤查询', 'Attendance lookup'], quota: ['sun', '年假配额', 'Leave quota'], settings: ['settings', '个人配置', 'Configuration'], runs: ['clock', '执行记录', 'History'], logs: ['logs', '运行日志', 'Activity'], users: ['users', '用户管理', 'Members'], account: ['shield', '账号安全', 'Security'] };
 const mobilePrimaryPages = new Set(['dashboard', 'attendance', 'runs', 'settings']);
+const lookupSections = {
+  punches: ['原始打卡', '/timeData/punchInfo'],
+  schedule: ['排班', '/schedule'],
+  exceptions: ['考勤异常', '/timeData/exceptionResult'],
+  leave: ['休假记录', '/timeData/leaveInfo'],
+  travel: ['出差记录', '/timeData/travelInfo'],
+  cancellations: ['销假记录', '/timeData/3567343'],
+  quotas: ['配额明细', '/quotaData/calculationQuota'],
+  processes: ['我的流程', '/process/myProcessInfo'],
+  unread: ['我的待阅', '/process/myToRead'],
+  overview: ['月度考勤概况', '/personal'],
+  profile: ['个人资料', '/employeeInfo/employee'],
+  departments: ['组织及部门', '/orgAndDept/department'],
+};
+const lookupLink = '<a href="#lookup" class="button secondary">更多考勤查询</a>';
 function shell() {
   const visiblePages = Object.entries(pages).filter(([key]) => key !== 'users' || state.user.role === 'admin');
   const navLinks = visiblePages.map(([key, [name, title]]) => `<a href="#${key}" data-page="${key}"${mobilePrimaryPages.has(key) ? '' : ' class="desktop-nav-link"'}>${icon(name)}${title}</a>`).join('');
@@ -167,6 +183,50 @@ function attendanceDetails(data) {
 function reportError(message) {
   return `<div class="report-error" role="alert">${icon('logs')}<p>${escape(message)}</p><span>检查个人配置和考勤查询权限后重试。</span></div>`;
 }
+function upstreamLink(path, label) {
+  const url = new URL(path, state.settings.apiBaseUrl);
+  return `<a class="lookup-source" href="${escape(url.href)}" target="_blank" rel="noopener noreferrer">${label} ${icon('arrow')}</a>`;
+}
+function lookupRows(items, name) {
+  const fields = entries => `<dl class="lookup-values">${entries.map(({ label, value }) =>
+    `<div><dt>${escape(label)}</dt><dd>${escape(value)}</dd></div>`).join('')}</dl>`;
+  return `<ul class="lookup-list">${items.map(({ title, date, status, fields: entries, detailPath }) => `<li class="lookup-record">
+    <header><div><h3>${escape(title || name)}</h3>${date ? `<p>${escape(date)}</p>` : ''}</div>${status ? badge(status, 'gray') : ''}</header>
+    ${entries.length ? fields(entries.slice(0, 4)) : ''}
+    ${entries.length > 4 ? `<details><summary>查看明细</summary>${fields(entries.slice(4))}</details>` : ''}
+    ${detailPath ? upstreamLink(detailPath, '在原系统查看审批详情') : ''}
+  </li>`).join('')}</ul>`;
+}
+function lookupResults(data, error) {
+  const [name] = lookupSections[state.lookupType];
+  const profile = state.lookupType === 'profile';
+  const overview = state.lookupType === 'overview';
+  const period = profile || state.lookupType === 'departments' ? '' : state.lookupMonth;
+  const pagination = !profile && !overview && state.lookupType !== 'schedule';
+  return `<div class="card-head"><h2 id="lookup-results-title" tabindex="-1">${name}</h2><span>${escape(period)}</span></div>
+    ${error ? reportError(error) + `<div class="report-config">${button('重试查询', 'lookup-retry', 'refresh')}</div>`
+    : !data ? '<div class="loading" role="status">正在查询考勤系统…</div>'
+    : data.items.length ? lookupRows(data.items, name) + (pagination ? reportPagination(data, 'lookup', '条') : '')
+    : empty(`暂无${name}`) + (pagination && data.page > 1 ? reportPagination(data, 'lookup', '条') : '')}`;
+}
+function lookupView() {
+  const [name, path] = lookupSections[state.lookupType];
+  const options = Object.entries(lookupSections).map(([key, [label]]) => [key, label]);
+  const { username, company, openId, hasPassword } = state.settings;
+  const departmentSearch = state.lookupType === 'departments'
+    ? '<label class="field"><span>搜索部门</span><input name="search" type="search" maxlength="80" placeholder="部门名称或编码" value="' + escape(state.lookupSearch) + '"></label>' : '';
+  const monthField = ['profile', 'departments'].includes(state.lookupType) ? ''
+    : '<label class="field"><span>查询月份</span><input name="month" type="month" min="1900-01" max="9999-12" value="' + escape(state.lookupMonth) + '" required></label>';
+  return heading('考勤查询', '查看原始打卡、排班、假期额度和流程。')
+    + `<section class="card report-filter lookup-filter"><form id="lookup-form">
+      ${select('type', '查询类型', state.lookupType, options)}
+      ${monthField}${departmentSearch}
+      <button type="submit" class="button primary">${icon('search')}查询</button>
+      </form><div class="lookup-sources">${upstreamLink(path, `原系统 · ${name}`)}</div></section>`
+    + (username && company && openId && hasPassword
+      ? `<section id="lookup-results" class="card lookup-results" aria-labelledby="lookup-results-title" aria-busy="true">${lookupResults()}</section>`
+      : `<section class="card">${empty('请先在个人配置中填写公司、考勤账号、密码和 OpenID。')}<div class="report-config">${button('前往个人配置', 'settings', 'settings', 'primary')}</div></section>`);
+}
 function quotaView(data = null, error = null) {
   const configured = state.settings.username && state.settings.company && state.settings.openId && state.settings.hasPassword;
   const quotaCard = (quota, current) => `<section class="card report-summary quota-summary"><div class="card-head"><h2>${quota.year} 年${current ? '年假配额' : '结余'}</h2>${badge(current ? '当前年度' : '过往年度', current ? '' : 'gray')}</div><div class="summary-grid">${[
@@ -182,7 +242,7 @@ function quotaView(data = null, error = null) {
 }
 function attendanceView(data = null, error = null) {
   const configured = state.settings.username && state.settings.company && state.settings.openId && state.settings.hasPassword;
-  return heading('考勤记录', '查看考勤系统中的实际明细与月度汇总。', button('刷新考勤', 'refresh', 'refresh'))
+  return heading('考勤记录', '查看考勤系统中的实际明细与月度汇总。', lookupLink + button('刷新考勤', 'refresh', 'refresh'))
     + `<section class="card report-filter"><form id="report-form"><label class="field"><span>查询月份</span><input name="month" type="month" min="1900-01" max="9999-12" value="${escape(state.reportMonth)}" required></label><button type="submit" class="button primary">${icon('logs')}查询考勤</button><p>${data ? `${escape(data.employeeName)} · 更新于 ${dateFormat(data.queriedAt)}` : '按个人配置中的考勤账号查询'}</p></form></section>`
     + (!configured ? `<section class="card">${empty('请先在个人配置中填写公司、考勤账号、密码和 OpenID。')}<div class="report-config">${button('前往个人配置', 'settings', 'settings', 'primary')}</div></section>` : error ? `<section class="card">${reportError(error)}</section>` : data ? `
       <section class="card report-summary"><div class="card-head"><h2>月度考勤汇总</h2><span>${escape(data.month)} · 按上游统计展示</span></div>${data.summaryError ? reportError(data.summaryError) : data.summary.items.length ? `<div class="summary-grid">${data.summary.items.map(item => `<article class="summary-item"><div><strong>${escape(item.name || '未命名项目')}</strong>${badge(item.type || '考勤汇总', 'gray')}</div><p>${escape(item.total ?? '—')}<small>${escape(item.unit || '')}</small></p></article>`).join('')}</div>${reportPagination(data.summary, 'summary', '项')}` : empty('这个月份暂无汇总数据。')}</section>
@@ -268,6 +328,22 @@ async function renderPage({ quiet = false } = {}) {
           markup = attendanceView(data);
         } catch (error) { markup = attendanceView(null, error.message); }
       }
+    } else if (page === 'lookup') {
+      state.lookupMonth ||= attendanceMonth();
+      content.innerHTML = lookupView();
+      attachForms();
+      const results = content.querySelector('#lookup-results');
+      if (!results) return;
+      const query = new URLSearchParams({ type: state.lookupType, month: state.lookupMonth, page: state.lookupPage });
+      if (state.lookupType === 'departments') query.set('search', state.lookupSearch);
+      let data, error;
+      try { data = await api(`/attendance/lookup?${query}`); }
+      catch (failure) { error = failure.message; }
+      if (renderId === state.renderId && state.user) {
+        results.innerHTML = lookupResults(data, error);
+        results.setAttribute('aria-busy', 'false');
+      }
+      return;
     } else if (page === 'quota') {
       const config = await api('/settings');
       if (renderId !== state.renderId || !state.user) return;
@@ -305,6 +381,24 @@ async function renderPage({ quiet = false } = {}) {
   }
 }
 function attachForms() {
+  const lookupForm = document.querySelector('#lookup-form');
+  if (lookupForm) {
+    const query = async focusResults => {
+      state.lookupType = lookupForm.elements.type.value;
+      state.lookupMonth = lookupForm.elements.month?.value || state.lookupMonth;
+      state.lookupSearch = lookupForm.elements.search?.value ?? state.lookupSearch;
+      state.lookupPage = 1;
+      const render = renderPage();
+      if (!focusResults) document.querySelector('#lookup-form [name="type"]')?.focus();
+      await render;
+      if (focusResults) document.querySelector('#lookup-results-title')?.focus();
+    };
+    lookupForm.elements.type.addEventListener('change', () => void query(false));
+    lookupForm.addEventListener('submit', event => {
+      event.preventDefault();
+      void query(true);
+    });
+  }
   document.querySelector('#report-form')?.addEventListener('submit', event => {
     event.preventDefault();
     state.reportMonth = new FormData(event.target).get('month');
@@ -489,6 +583,7 @@ async function onClick(event) {
       await api('/auth/logout', { method: 'POST' });
       state.user = null; state.csrf = null; state.settings = null;
       state.reportMonth = ''; state.reportPage = 1; state.summaryPage = 1;
+      state.lookupMonth = ''; state.lookupType = 'punches'; state.lookupPage = 1; state.lookupSearch = '';
       clearInterval(refreshTimer);
       setMobileMore(false);
       root.removeEventListener('click', onClick);
@@ -497,6 +592,10 @@ async function onClick(event) {
       location.hash = 'settings';
     } else if (action === 'refresh') {
       await renderPage();
+    } else if (action === 'lookup-retry' || action === 'lookup-prev' || action === 'lookup-next') {
+      if (action !== 'lookup-retry') state.lookupPage += action === 'lookup-prev' ? -1 : 1;
+      await renderPage();
+      document.querySelector('#lookup-results-title')?.focus();
     } else if (action === 'simulate' || action === 'real-run') {
       if (action === 'real-run' && !await confirmRealRun()) return;
       const result = await api('/attendance/run', { method: 'POST', body: { dryRun: action === 'simulate' } });

@@ -3,6 +3,7 @@ import { AppError, appleHolidayUrl, defaults, isWeekday, localClock } from './co
 import { normalizeDays, normalizeSummary, normalizeQuota, reportQuery } from './reports.js';
 import { createUpstreamSessions, UpstreamAuthError } from './upstream-session.js';
 import { createHolidayCalendar } from './holidays.js';
+import { lookupQuery, lookupUrl, normalizeLookup } from './attendance-lookup.js';
 
 export class AttendanceError extends AppError {
   constructor(message, outcome = 'failed') {
@@ -176,6 +177,17 @@ export function createAttendance(fetchImpl = fetch, timeout = 12000, { store, cl
         summaryError: results[1].status === 'rejected' ? safeError(results[1].reason) : null,
         queriedAt: new Date().toISOString(),
       };
+    },
+    async lookup(config, input) {
+      const query = lookupQuery(input);
+      const { account, result } = await authenticated(config, account => request(
+        lookupUrl(config.apiBaseUrl, query, account.employeeId),
+        { method: 'GET', headers: { 'X-Token': account.token } },
+      ));
+      if (responseVerdict(result) !== true) {
+        throw new AttendanceError('考勤查询被拒绝，请检查账号的查询权限');
+      }
+      return { ...normalizeLookup(result.content, query, account.employeeId), queriedAt: new Date(clock()).toISOString() };
     },
     async quota(config) {
       const month = localClock(new Date(clock()), config.timezone).day.slice(0, 7);

@@ -6,6 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { AppError, defaults, importLegacy, isDate, localClock, validateLeaveTimes, validateSettings } from './config.js';
 import { hashPassword, newToken, tokenHash, validateAccount, validatePassword, verifyPassword } from './security.js';
 import { reportQuery } from './reports.js';
+import { lookupQuery } from './attendance-lookup.js';
 
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 const assets = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'], '/favicon.svg': ['favicon.svg', 'image/svg+xml'] };
@@ -234,6 +235,24 @@ export async function createHttpServer({ store, scheduler, attendance, env = pro
         return json(res, 200, { items: store.runs(userId, 20, (page - 1) * 20), page, total });
       }
       if (path === '/api/logs' && method === 'GET') return json(res, 200, { items: store.logs(userId) });
+      if (path === '/api/attendance/lookup' && method === 'GET') {
+        const config = store.settings(userId, true);
+        const input = lookupQuery({
+          type: url.searchParams.get('type'),
+          month: url.searchParams.get('month') ?? localClock(new Date(), config.timezone).day.slice(0, 7),
+          page: Number(url.searchParams.get('page') ?? 1),
+          search: url.searchParams.get('search') ?? '',
+        });
+        const key = `lookup:${userId}:${input.type}`;
+        rateLimit(`lookup:${userId}`, 40);
+        if (reportRequests.has(key)) throw new AppError('此类查询正在进行，请稍后重试', 409);
+        reportRequests.add(key);
+        try {
+          const result = await attendance.lookup(config, input);
+          if (!authenticate(req)) throw new AppError('登录状态已失效，请重新登录', 401);
+          return json(res, 200, result);
+        } finally { reportRequests.delete(key); }
+      }
       if (path === '/api/attendance/quota' && method === 'GET') {
         rateLimit(`quota:${userId}`, 12);
         const key = `quota:${userId}`;

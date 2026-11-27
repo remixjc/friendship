@@ -232,4 +232,37 @@ dialog{border:0;border-radius:16px;padding:32px;box-shadow:0 24px 70px #10182833
   .mobile-more-logout svg{width:15px;height:15px}
 }
 @media(max-width:760px) and (prefers-reduced-motion:no-preference){.mobile-more-card{animation:mobile-sheet-in .18s ease-out}}
+
+.lookup-filter .field{margin:0;min-inline-size:0}
+.lookup-filter .field:first-child{width:min(220px,100%)}
+.lookup-filter .button,.lookup-filter input,.lookup-filter select{block-size:46px}
+.lookup-filter .field:nth-child(2){width:min(170px,100%)}
+.lookup-sources{display:flex;flex-wrap:wrap;column-gap:22px;margin-top:12px;border-top:1px solid var(--line)}
+.lookup-source{min-height:44px;display:inline-flex;align-items:center;gap:7px;color:var(--primary-dark);font-size:13px;text-decoration:none}
+.lookup-source:hover{text-decoration:underline}
+.lookup-source svg{width:15px;height:15px;flex:none}
+.lookup-list{list-style:none;margin:0;padding:18px 24px;display:grid;gap:12px}
+.lookup-record{min-width:0;padding:16px;border:1px solid var(--line);border-radius:10px;overflow-wrap:anywhere}
+.lookup-record header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.lookup-record h3{color:var(--ink);font-size:15px;line-height:1.5}
+.lookup-record header p{margin-top:3px;color:var(--muted);font-size:12px;line-height:1.5}
+.lookup-record .badge{max-width:50%;white-space:normal}
+.lookup-values{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px 18px;margin:14px 0 0}
+.lookup-values dt{color:var(--muted);font-size:12px;line-height:1.5}
+.lookup-values dd{margin:4px 0 0;color:var(--ink);font-size:14px;line-height:1.5}
+.lookup-record details{margin-top:8px}
+.lookup-record summary{width:fit-content;padding:12px 4px 12px 0;color:var(--primary-dark);font-size:13px;line-height:20px;cursor:pointer}
+.lookup-record details .lookup-values{margin:2px 0 0}
+.lookup-results .loading{min-height:112px}
+@media(max-width:1100px){.lookup-values{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(min-width:761px) and (max-width:950px){
+  .lookup-filter .field:first-child{width:160px}
+  .lookup-filter .field:nth-child(2){width:140px}
+}
+@media(max-width:760px){
+  .lookup-filter .field:first-child,.lookup-filter .field:nth-child(2){width:100%}
+  .lookup-filter .field{gap:6px}
+  .lookup-list{padding:14px}
+  .lookup-record{padding:13px}
+}
 @keyframes mobile-sheet-in{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}
