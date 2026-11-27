@@ -121,13 +121,48 @@ function attendanceTime(actual, planned, day) {
   const short = value => value?.startsWith(`${day} `) ? value.slice(11) : value;
   return `<span class="actual-time">${actual ? escape(short(actual)) : '—'}</span>${planned ? `<small class="planned-time">计划 ${escape(short(planned))}</small>` : ''}`;
 }
-function attendanceTable(data) {
+function attendanceDetails(data) {
   if (!data.items.length) return empty('这个月份暂无考勤明细。');
-  return `<div class="table-wrap"><table class="attendance-table"><thead><tr><th>日期 / 班次</th><th>考勤项目</th><th>时长</th><th>实际开始时间</th><th>实际结束时间</th><th>标记</th></tr></thead><tbody>${data.items.map(day => {
-    const items = day.items.length ? day.items : [{ name: '暂无考勤项目' }];
-    const flags = [day.hasException ? badge('存在异常', 'error') : '', day.hasOvertime ? badge('存在加班', 'blue') : '', day.hasTravel ? badge('存在出差', 'blue') : ''].filter(Boolean).join(' ') || '—';
-    return items.map((item, index) => `<tr>${index === 0 ? `<td rowspan="${items.length}" class="attendance-day"><strong>${escape(day.date)}</strong><span>${escape(day.scheduleName || '暂无班次')}</span></td>` : ''}<td class="attendance-item">${escape(item.name || '未命名项目')}<span class="hint">${escape(item.type || '')}</span></td><td class="attendance-duration">${escape(item.duration ?? '—')}</td><td class="attendance-clock">${attendanceTime(item.begin, item.plannedBegin, day.date)}</td><td class="attendance-clock">${attendanceTime(item.end, item.plannedEnd, day.date)}</td>${index === 0 ? `<td rowspan="${items.length}" class="attendance-flags">${flags}</td>` : ''}</tr>`).join('');
-  }).join('')}</tbody></table></div>`;
+  const days = data.items.map(day => ({
+    date: escape(day.date),
+    shift: escape(day.scheduleName || '暂无班次'),
+    flags: [
+      day.hasException && badge('存在异常', 'error'),
+      day.hasOvertime && badge('存在加班', 'blue'),
+      day.hasTravel && badge('存在出差', 'blue'),
+    ].filter(Boolean).join(' '),
+    items: day.items.map(item => ({
+      name: escape(item.name || '未命名项目'),
+      type: escape(item.type),
+      duration: escape(item.duration ?? '—'),
+      begin: attendanceTime(item.begin, item.plannedBegin, day.date),
+      end: attendanceTime(item.end, item.plannedEnd, day.date),
+    })),
+  }));
+  const tableRows = days.map(({ date, shift, flags, items }) => {
+    const dayCell = `<td rowspan="${items.length || 1}" class="attendance-day"><strong>${date}</strong><span>${shift}</span></td>`;
+    const flagsCell = `<td rowspan="${items.length || 1}" class="attendance-flags">${flags || '—'}</td>`;
+    if (!items.length) return `<tr>${dayCell}<td colspan="4">暂无考勤项目</td>${flagsCell}</tr>`;
+    return items.map(({ name, type, duration, begin, end }, index) => `<tr>${index === 0 ? dayCell : ''}
+      <td class="attendance-item">${name}${type ? `<span class="hint">${type}</span>` : ''}</td>
+      <td class="attendance-duration">${duration}</td><td class="attendance-clock">${begin}</td><td class="attendance-clock">${end}</td>
+      ${index === 0 ? flagsCell : ''}</tr>`).join('');
+  }).join('');
+  const cards = days.map(({ date, shift, flags, items }) => `<article class="attendance-record">
+    <h3><time datetime="${date}">${date}</time></h3>
+    <p class="attendance-shift">${shift}</p>
+    ${flags ? `<div class="attendance-record-flags">${flags}</div>` : ''}
+    ${items.length ? items.map(({ name, type, duration, begin, end }) => `<div class="attendance-record-item">
+      <div class="attendance-record-item-head"><strong>${name}</strong>${type ? `<span class="hint">${type}</span>` : ''}</div>
+      <dl class="attendance-record-values">
+        <div><dt>实际开始</dt><dd>${begin}</dd></div>
+        <div><dt>实际结束</dt><dd>${end}</dd></div>
+        <div><dt>时长</dt><dd>${duration}</dd></div>
+      </dl>
+    </div>`).join('') : '<p class="attendance-no-items">暂无考勤项目</p>'}
+  </article>`).join('');
+  return `<div class="table-wrap attendance-table-wrap"><table class="attendance-table"><thead><tr><th>日期 / 班次</th><th>考勤项目</th><th>时长</th><th>实际开始时间</th><th>实际结束时间</th><th>标记</th></tr></thead><tbody>${tableRows}</tbody></table></div>
+    <div class="attendance-records">${cards}</div>`;
 }
 function reportError(message) {
   return `<div class="report-error" role="alert">${icon('logs')}<p>${escape(message)}</p><span>检查个人配置和考勤查询权限后重试。</span></div>`;
@@ -151,7 +186,7 @@ function attendanceView(data = null, error = null) {
     + `<section class="card report-filter"><form id="report-form"><label class="field"><span>查询月份</span><input name="month" type="month" min="1900-01" max="9999-12" value="${escape(state.reportMonth)}" required></label><button type="submit" class="button primary">${icon('logs')}查询考勤</button><p>${data ? `${escape(data.employeeName)} · 更新于 ${dateFormat(data.queriedAt)}` : '按个人配置中的考勤账号查询'}</p></form></section>`
     + (!configured ? `<section class="card">${empty('请先在个人配置中填写公司、考勤账号、密码和 OpenID。')}<div class="report-config">${button('前往个人配置', 'settings', 'settings', 'primary')}</div></section>` : error ? `<section class="card">${reportError(error)}</section>` : data ? `
       <section class="card report-summary"><div class="card-head"><h2>月度考勤汇总</h2><span>${escape(data.month)} · 按上游统计展示</span></div>${data.summaryError ? reportError(data.summaryError) : data.summary.items.length ? `<div class="summary-grid">${data.summary.items.map(item => `<article class="summary-item"><div><strong>${escape(item.name || '未命名项目')}</strong>${badge(item.type || '考勤汇总', 'gray')}</div><p>${escape(item.total ?? '—')}<small>${escape(item.unit || '')}</small></p></article>`).join('')}</div>${reportPagination(data.summary, 'summary', '项')}` : empty('这个月份暂无汇总数据。')}</section>
-      <section class="card"><div class="card-head"><h2>考勤明细</h2><span>同一天的多个考勤项目分别展示</span></div><div class="report-note">打卡项目的实际时间为空时显示「—」；下方灰色「计划」仅供参考，不表示已经打卡。休假等项目显示上游记录的起止时间。</div>${data.recordsError ? reportError(data.recordsError) : attendanceTable(data.records) + reportPagination(data.records, 'report', '个日期')}</section>
+      <section class="card attendance-details"><div class="card-head"><h2>考勤明细</h2><span>同一天的多个考勤项目分别展示</span></div><div class="report-note">打卡项目的实际时间为空时显示「—」；下方灰色「计划」仅供参考，不表示已经打卡。休假等项目显示上游记录的起止时间。</div>${data.recordsError ? reportError(data.recordsError) : attendanceDetails(data.records) + reportPagination(data.records, 'report', '个日期')}</section>
       <div class="footer"><span>考勤查询仅获取记录，不会提交打卡。</span><span>时长与汇总采用上游值，不在本地重新计算。</span></div>` : '');
 }
 function dashboard(data) {
