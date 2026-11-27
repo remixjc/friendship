@@ -156,13 +156,14 @@ function attendanceView(data = null, error = null) {
 }
 function dashboard(data) {
   const config = state.settings, plan = data.plan;
-  const { leave } = data;
+  const { leave, leaveRanges = [], clock } = data;
   const leaveRange = leave?.startTime ? `${leave.startTime}–${leave.endTime}` : '全天';
-  const leaveButton = `<button class="button secondary" type="button" data-action="today-leave" aria-haspopup="dialog" aria-controls="today-leave-dialog" data-day="${escape(data.clock.day)}" data-leave="${Boolean(leave)}" data-start-time="${escape(leave?.startTime)}" data-end-time="${escape(leave?.endTime)}">${icon('sun')}${leave ? '修改休假' : '今日休假'}</button>`;
+  const leaveButton = `<button class="button secondary" type="button" data-action="today-leave" aria-haspopup="dialog" aria-controls="today-leave-dialog">${icon('sun')}${leave ? '管理休假' : '今日休假'}</button>`;
   const calendarUnavailable = plan && !plan.workday && (plan.refresh_workday || plan.source === '接口失败，跳过今日任务');
   const detail = (key, value) => `<div class="detail"><span>${key}</span><strong>${value}</strong></div>`;
   return heading(`你好，${escape(state.user.displayName)}。`, '看一眼今天的安排，让每一次执行都心中有数。', leaveButton + button('模拟打卡', 'simulate', 'play') + button('个人配置', 'settings', 'settings', 'primary'))
-    + (leave ? `<div class="leave-summary"><strong>今日休假</strong><span>${escape(leaveRange)} · 休假时段内暂停打卡</span></div>` : '')
+    + (leave ? `<div class="leave-summary"><div><strong>今日休假</strong><span>${escape(leaveRange)} · 休假时段内暂停打卡</span></div></div>` : '')
+    + leaveRanges.map(({ id, startDay, endDay }) => `<div class="leave-summary"><div><strong>${startDay <= clock.day ? '日期休假进行中' : '已安排休假'}</strong><span>${escape(startDay)} 至 ${escape(endDay)}</span></div><button class="button ghost" type="button" data-action="today-leave" data-range-id="${escape(id)}" aria-label="修改 ${escape(startDay)} 至 ${escape(endDay)} 的休假">修改</button></div>`).join('')
     + `<section class="welcome"><div><span class="eyebrow">TODAY, WELL PLANNED</span><h2>${!data.enabled ? '先准备好，再从容出发。' : calendarUnavailable ? '工作日尚未确定。' : data.dryRun ? '你的计划，正在模拟运行。' : plan?.workday ? '今天的考勤，已加入计划。' : '今天可以慢一点。'}</h2><p>${!data.enabled ? '定时任务尚未开启。完成账号和时间配置后，可以先用模拟打卡验证整个流程。' : calendarUnavailable ? '节假日接口未能确定工作日，今天的自动任务已暂停。请检查工作日规则或设置指定日期覆盖。' : data.dryRun ? '模拟模式会记录计划和执行结果。准备好后，在个人配置中切换到真实打卡。' : plan?.workday ? '系统会在选定的时间内执行打卡。每个定时任务仅提交一次，结果可在执行记录中查看。' : '当前未安排工作日任务。你仍可以查看配置、记录，或手动执行测试。'}</p></div><div class="welcome-symbol"><div class="clock-graphic"></div></div></section>`
     + `<div class="stats">${[['今日执行', data.stats.total || 0, '次', 'clock', '包含手动与定时任务'], ['真实成功', data.stats.success || 0, '次', 'check', '由考勤接口确认'], ['模拟完成', data.stats.simulated || 0, '次', 'play', '不发送考勤请求'], ['需要关注', data.stats.failed || 0, '次', 'logs', '失败或结果待核对']].map(([label, value, unit, name, foot]) => `<div class="stat"><div class="stat-top">${label}${icon(name)}</div><div class="stat-value">${value}<small>${unit}</small></div><div class="stat-foot">${foot}</div></div>`).join('')}</div>`
     + `<div class="dashboard-grid"><section class="card"><div class="card-head"><h2>今日打卡计划</h2>${plan ? badge(calendarUnavailable ? (plan.refresh_workday ? '等待判断' : '判断失败，已跳过') : plan.workday ? '工作日' : '休息日', calendarUnavailable ? 'warn' : plan.workday ? '' : 'gray') : badge('等待刷新', 'gray')}</div><div class="card-body">${[['am', '上午打卡', 'sun'], ['pm', '下午打卡', 'moon']].map(([slot, label, name]) => `<div class="schedule-row"><div class="schedule-icon">${icon(name)}</div><div><h3>${label}</h3><p>随机范围 ${config[`${slot}Start`]} – ${config[`${slot}End`]}</p></div><div class="schedule-time">${plan?.[slot] || '--:--'}<small>${plan ? '已生成计划' : '尚未生成'}</small></div></div>`).join('')}<div class="plan-note">${escape(plan?.source || `每日 ${config.freshDate} 后生成计划`)} · ${escape(config.timezone)}<br>错过执行时间会记录为跳过，避免重启后补打卡。</div></div></section><section class="card"><div class="card-head"><h2>服务状态</h2>${badge(data.enabled ? '已启用' : '已暂停', data.enabled ? '' : 'gray')}</div><div class="card-body">${detail('定时任务', data.enabled ? '运行中' : '未开启')}${detail('执行模式', data.dryRun ? badge('模拟模式', 'blue') : badge('真实打卡', 'warn'))}${detail('考勤账号', escape(config.username || '尚未配置'))}${detail('考勤密码', config.hasPassword ? '已加密保存' : '尚未设置')}${detail('每日刷新', config.freshDate)}${detail('工作日规则', config.workdayMode === 'holiday' ? '节假日接口' : '周一至周五')}<div class="actions">${button('测试考勤登录', 'test-login', 'shield')}${!data.dryRun ? button('立即打卡', 'real-run', 'play', 'primary') : ''}</div></div></section></div><section class="card"><div class="card-head"><h2>最近执行</h2><a href="#runs" class="button ghost">查看全部 ${icon('arrow')}</a></div>${runsTable(data.runs)}</section><div class="footer"><span>FriendsShip / Attendance Studio</span><span>数据独立保存 · 执行记录保留 90 天</span></div>`;
@@ -196,7 +197,9 @@ async function renderPage({ quiet = false } = {}) {
     let markup;
     if (page === 'dashboard') {
       const [config, data] = await Promise.all([api('/settings'), api('/dashboard')]);
+      if (renderId !== state.renderId || !state.user) return;
       state.settings = config;
+      state.dashboard = data;
       document.querySelector('#top-date').textContent = data.clock.day;
       markup = dashboard(data);
     } else if (page === 'settings') {
@@ -329,49 +332,70 @@ async function confirmRealRun() {
 const leaveDialog = document.querySelector('#today-leave-dialog');
 const leaveForm = document.querySelector('#today-leave-form');
 const leaveFields = document.querySelector('#today-leave-times');
+const leaveDates = document.querySelector('#leave-dates');
 const leaveError = document.querySelector('#today-leave-error');
 const clearLeave = document.querySelector('#clear-today-leave');
 
 function updateLeaveFields() {
-  const showTimes = leaveForm.elements.mode.value === 'time-range';
+  const { mode, startTime, endTime, startDay, endDay } = leaveForm.elements;
+  const showTimes = mode.value === 'time-range';
+  const showDates = mode.value === 'date-range';
   leaveFields.hidden = !showTimes;
-  leaveForm.elements.startTime.required = showTimes;
-  leaveForm.elements.endTime.required = showTimes;
+  leaveDates.hidden = !showDates;
+  startTime.required = endTime.required = showTimes;
+  startDay.required = endDay.required = showDates;
+  clearLeave.hidden = showDates ? !leaveForm.dataset.rangeId : leaveForm.dataset.hasToday !== 'true';
+  endDay.min = startDay.value > leaveForm.dataset.day ? startDay.value : leaveForm.dataset.day;
 }
 function showTodayLeave(element) {
-  const { day, leave, startTime, endTime } = element.dataset;
+  const { clock: { day }, leave, leaveRanges = [] } = state.dashboard;
+  const range = leaveRanges.find(item => item.id === element.dataset.rangeId);
+  const { mode, startTime, endTime, startDay, endDay } = leaveForm.elements;
   leaveForm.dataset.day = day;
-  leaveForm.elements.mode.value = startTime ? 'time-range' : 'all-day';
-  leaveForm.elements.startTime.value = startTime;
-  leaveForm.elements.endTime.value = endTime;
-  clearLeave.hidden = leave !== 'true';
+  leaveForm.dataset.rangeId = range?.id ?? '';
+  leaveForm.dataset.hasToday = Boolean(leave);
+  mode.value = range ? 'date-range' : leave?.startTime ? 'time-range' : 'all-day';
+  mode.disabled = Boolean(range);
+  startTime.value = leave?.startTime ?? '';
+  endTime.value = leave?.endTime ?? '';
+  startDay.min = range?.startDay < day ? range.startDay : day;
+  startDay.value = range?.startDay ?? day;
+  startDay.readOnly = Boolean(range?.startDay < day);
+  endDay.value = range?.endDay ?? day;
+  leaveDialog.querySelector('h2').textContent = range ? '修改日期休假' : '今日休假';
   leaveError.textContent = '';
   updateLeaveFields();
   leaveDialog.showModal();
 }
 async function saveTodayLeave(remove = false) {
-  const { mode, startTime, endTime } = Object.fromEntries(new FormData(leaveForm));
-  const body = remove ? { day: leaveForm.dataset.day } : {
-    day: leaveForm.dataset.day,
-    startTime: mode === 'time-range' ? startTime : null,
-    endTime: mode === 'time-range' ? endTime : null,
-  };
+  const { mode, startTime, endTime, startDay, endDay } = leaveForm.elements;
+  const { day, rangeId } = leaveForm.dataset;
+  const dateRange = remove ? Boolean(rangeId) : mode.value === 'date-range';
+  const body = dateRange
+    ? (remove ? { id: rangeId } : { id: rangeId, startDay: startDay.value, endDay: endDay.value })
+    : (remove ? { day } : {
+      day,
+      startTime: mode.value === 'time-range' ? startTime.value : null,
+      endTime: mode.value === 'time-range' ? endTime.value : null,
+    });
   const controls = [...leaveForm.elements];
+  const disabled = controls.map(control => control.disabled);
   controls.forEach(control => { control.disabled = true; });
   leaveError.textContent = '';
   try {
-    await api('/leave/today', { method: remove ? 'DELETE' : 'PUT', body });
+    await api(dateRange ? '/leave/ranges' : '/leave/today', { method: remove ? 'DELETE' : 'PUT', body });
     leaveDialog.close();
-    toast(remove ? '已取消今日休假' : '今日休假已保存');
+    toast(remove ? '已取消休假' : '休假已保存');
     if (state.page === 'dashboard') await renderPage();
   } catch (error) {
     if (!state.user) leaveDialog.close();
     else leaveError.textContent = error.message;
   } finally {
-    controls.forEach(control => { control.disabled = false; });
+    controls.forEach((control, index) => { control.disabled = disabled[index]; });
   }
 }
 leaveForm.elements.mode.addEventListener('change', updateLeaveFields);
+leaveForm.elements.startDay.addEventListener('change', updateLeaveFields);
 leaveForm.addEventListener('submit', event => {
   event.preventDefault();
   void saveTodayLeave();
@@ -379,7 +403,7 @@ leaveForm.addEventListener('submit', event => {
 clearLeave.addEventListener('click', () => void saveTodayLeave(true));
 document.querySelector('#close-today-leave').addEventListener('click', () => leaveDialog.close());
 leaveDialog.addEventListener('cancel', event => {
-  if (leaveForm.elements.mode.disabled) event.preventDefault();
+  if (leaveForm.querySelector('[type=submit]').disabled) event.preventDefault();
 });
 
 async function onClick(event) {

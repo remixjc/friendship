@@ -29,6 +29,7 @@
           <select name="mode">
             <option value="all-day">全天休假</option>
             <option value="time-range">自选时段</option>
+            <option value="date-range">日期范围</option>
           </select>
         </label>
         <div id="today-leave-times" hidden>
@@ -37,6 +38,13 @@
             <label class="field"><span>结束时间</span><input name="endTime" type="time"></label>
           </div>
           <small class="hint">包含开始和结束分钟。</small>
+        </div>
+        <div id="leave-dates" hidden>
+          <div class="form-grid">
+            <label class="field"><span>开始日期</span><input name="startDay" type="date" max="9999-12-31"></label>
+            <label class="field"><span>结束日期</span><input name="endDay" type="date" max="9999-12-31"></label>
+          </div>
+          <small class="hint">起止日期均计入休假，到结束日期后的第一天恢复。</small>
         </div>
         <div class="form-error" id="today-leave-error" role="alert"></div>
         <div class="actions">

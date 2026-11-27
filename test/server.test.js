@@ -135,6 +135,36 @@ test('今日休假限定个人时区、登录用户与当天，支持设置、�
   assert.equal((await f.admin.request('/api/dashboard')).data.leave, null);
 });
 
+test('日期休假支持长期预约和修改，拒绝范围重叠与跨账号操作', async t => {
+  const f = await fixture(t);
+  const path = '/api/leave/ranges';
+  const { day } = (await f.admin.request('/api/dashboard')).data.clock;
+  const offset = days => new Date(Date.parse(day) + days * 86400000).toISOString().slice(0, 10);
+  const input = { startDay: offset(2), endDay: offset(62) };
+  assert.equal((await f.admin.request(path, 'PUT', { ...input, startDay: offset(-1) })).status, 400);
+  assert.equal((await f.admin.request(path, 'PUT', { ...input, endDay: offset(1) })).status, 400);
+  assert.equal((await f.admin.request(path, 'PUT', { ...input, startDay: 'bad' })).status, 400);
+  const saved = (await f.admin.request(path, 'PUT', input)).data.range;
+  assert.match(saved.id, /^[a-f0-9-]{36}$/);
+  assert.deepEqual((await f.admin.request(path, 'PUT', input)).data.range, saved);
+  assert.equal((await f.admin.request(path, 'PUT', { ...input, startDay: offset(4) })).status, 409);
+  assert.deepEqual((await f.admin.request('/api/dashboard')).data.leaveRanges, [saved]);
+  const member = f.client();
+  const credentials = { username: 'range-member', password: 'test-range-password' };
+  await f.admin.request('/api/users', 'POST', { ...credentials, role: 'user' });
+  await member.request('/api/auth/login', 'POST', credentials);
+  assert.deepEqual((await member.request('/api/dashboard')).data.leaveRanges, []);
+  assert.equal((await member.request(path, 'DELETE', { id: saved.id })).status, 404);
+  assert.equal((await member.request(path, 'PUT', { ...saved, endDay: offset(65) })).status, 404);
+  const active = f.store.saveLeaveRange(f.store.users()[0].id, '', offset(-3), day);
+  assert.equal((await f.admin.request(path, 'PUT', { ...active, startDay: day })).status, 400);
+  assert.equal((await f.admin.request(path, 'PUT', { ...active, endDay: offset(1) })).status, 200);
+  assert.equal((await f.admin.request('/api/attendance/run', 'POST', { dryRun: false })).status, 409);
+  assert.equal((await f.admin.request(path, 'PUT', { ...saved, endDay: offset(65) })).status, 200);
+  assert.equal((await f.admin.request(path, 'DELETE', { id: saved.id })).status, 200);
+  assert.deepEqual((await f.admin.request('/api/dashboard')).data.leaveRanges.map(range => range.id), [active.id]);
+});
+
 test('完整流程：配置、加密、考勤登录、模拟、真实打卡、历史和日志', async t => {
   const f = await fixture(t);
   const input = { apiBaseUrl: f.apiBaseUrl, username: 'attendance-user', password: 'test-attendance-password', openId: 'client-openid', dryRun: false };

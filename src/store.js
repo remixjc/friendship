@@ -70,11 +70,17 @@ export function createStore(dataDir, encryptionKey) {
         OR (start_time IS NOT NULL AND end_time IS NOT NULL AND start_time < end_time)),
       PRIMARY KEY(user_id,day)
     );
+    CREATE TABLE IF NOT EXISTS leave_ranges (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      start_day TEXT NOT NULL, end_day TEXT NOT NULL CHECK(start_day <= end_day)
+    );
+    CREATE INDEX IF NOT EXISTS leave_ranges_by_user ON leave_ranges(user_id,end_day,start_day);
   `);
   if (!db.prepare('PRAGMA table_info(plans)').all().some(column => column.name === 'refresh_workday')) {
     db.exec('ALTER TABLE plans ADD COLUMN refresh_workday INTEGER NOT NULL DEFAULT 0');
   }
-  db.exec('PRAGMA user_version=4');
+  db.exec('PRAGMA user_version=5');
   // A submitted request may have reached the upstream before a process crash. Do not replay it.
   db.prepare("UPDATE runs SET status='unknown',message='服务在执行过程中重启；请核对考勤结果，系统不会自动重试',completed_at=? WHERE status='running'")
     .run(new Date().toISOString());
@@ -166,6 +172,22 @@ export function createStore(dataDir, encryptionKey) {
         .run(id, day, startTime, endTime).changes;
     },
     deleteLeave: (id, day) => db.prepare('DELETE FROM daily_leave WHERE user_id=? AND day=?').run(id, day).changes,
+    leaveRanges: (userId, day) => db.prepare(`SELECT id,start_day AS startDay,end_day AS endDay FROM leave_ranges
+      WHERE user_id=? AND end_day>=? ORDER BY start_day`).all(userId, day),
+    leaveRange: (userId, id, day) => db.prepare(`SELECT start_day AS startDay FROM leave_ranges
+      WHERE user_id=? AND id=? AND end_day>=?`).get(userId, id, day),
+    overlappingLeave: (userId, startDay, endDay, except = '') => db.prepare(`SELECT id,start_day AS startDay,end_day AS endDay
+      FROM leave_ranges WHERE user_id=? AND end_day>=? AND start_day<=? AND id<>? LIMIT 1`).get(userId, startDay, endDay, except),
+    saveLeaveRange(userId, id, startDay, endDay) {
+      if (id) {
+        return db.prepare(`UPDATE leave_ranges SET start_day=?,end_day=? WHERE user_id=? AND id=?
+          RETURNING id,start_day AS startDay,end_day AS endDay`).get(startDay, endDay, userId, id);
+      }
+      return db.prepare(`INSERT INTO leave_ranges(id,user_id,start_day,end_day) VALUES(?,?,?,?)
+        RETURNING id,start_day AS startDay,end_day AS endDay`).get(randomUUID(), userId, startDay, endDay);
+    },
+    deleteLeaveRange: (userId, id, day) => db.prepare(`DELETE FROM leave_ranges WHERE user_id=? AND id=? AND end_day>=?
+      RETURNING start_day AS startDay,end_day AS endDay`).get(userId, id, day),
     log(id, level, event, message) {
       db.prepare('INSERT INTO logs(user_id,level,event,message,created_at) VALUES(?,?,?,?,?)')
         .run(id, level, event, message, new Date().toISOString());
@@ -183,6 +205,7 @@ export function createStore(dataDir, encryptionKey) {
       db.prepare('DELETE FROM runs WHERE created_at<?').run(cutoff);
       db.prepare('DELETE FROM plans WHERE created_at<?').run(cutoff);
       db.prepare('DELETE FROM daily_leave WHERE day<?').run(cutoff.slice(0, 10));
+      db.prepare('DELETE FROM leave_ranges WHERE end_day<?').run(cutoff.slice(0, 10));
       db.prepare('DELETE FROM holiday_calendar WHERE fetched_at<?').run(Date.now() - 7 * 86400000);
       db.prepare('DELETE FROM holiday_schedules WHERE fetched_at<?').run(Date.now() - 7 * 86400000);
     },

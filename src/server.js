@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { AppError, defaults, importLegacy, localClock, validateLeaveTimes, validateSettings } from './config.js';
+import { AppError, defaults, importLegacy, isDate, localClock, validateLeaveTimes, validateSettings } from './config.js';
 import { hashPassword, newToken, tokenHash, validateAccount, validatePassword, verifyPassword } from './security.js';
 import { reportQuery } from './reports.js';
 
@@ -175,7 +175,8 @@ export async function createHttpServer({ store, scheduler, attendance, env = pro
           sum(CASE WHEN status='simulated' THEN 1 ELSE 0 END) AS simulated
           FROM runs WHERE user_id=? AND day=?`).get(userId, clock.day);
         return json(res, 200, { clock, timezone: config.timezone, enabled: config.enabled, dryRun: config.dryRun,
-          plan, stats, runs: store.runs(userId, 6), hasPassword: config.hasPassword, leave: store.leave(userId, clock.day) });
+          plan, stats, runs: store.runs(userId, 6), hasPassword: config.hasPassword, leave: store.leave(userId, clock.day),
+          leaveRanges: store.leaveRanges(userId, clock.day) });
       }
       if (path === '/api/leave/today' && ['PUT', 'DELETE'].includes(method)) {
         const input = await readBody(req);
@@ -191,6 +192,40 @@ export async function createHttpServer({ store, scheduler, attendance, env = pro
             }
           });
           return json(res, 200, { day, leave });
+        });
+      }
+      if (path === '/api/leave/ranges' && ['PUT', 'DELETE'].includes(method)) {
+        const { id = '', startDay, endDay } = await readBody(req);
+        if (typeof id !== 'string' || (id && !/^[a-f0-9-]{36}$/.test(id)) || (method === 'DELETE' && !id)) {
+          throw new AppError('休假记录编号无效');
+        }
+        return await scheduler.withUser(userId, () => {
+          const { day } = localClock(new Date(), store.settings(userId).timezone);
+          const range = store.transaction(() => {
+            if (method === 'DELETE') {
+              const removed = store.deleteLeaveRange(userId, id, day);
+              if (!removed) throw new AppError('找不到可取消的休假', 404);
+              store.log(userId, 'info', 'leave', `已取消日期休假（${removed.startDay} 至 ${removed.endDay}）`);
+              return null;
+            }
+            const saved = id ? store.leaveRange(userId, id, day) : null;
+            if (id && !saved) throw new AppError('找不到可修改的休假', 404);
+            if (!isDate(startDay) || !isDate(endDay) || endDay < day || endDay < startDay) {
+              throw new AppError('请选择有效的起止日期，结束日期需为今天或之后');
+            }
+            if (saved?.startDay < day ? startDay !== saved.startDay : startDay < day) {
+              throw new AppError('开始日期需为今天或之后，已开始的休假仅可修改结束日期');
+            }
+            const overlap = store.overlappingLeave(userId, startDay, endDay, id);
+            if (overlap) {
+              if (!id && overlap.startDay === startDay && overlap.endDay === endDay) return overlap;
+              throw new AppError('日期与已设置的休假重叠，请修改已有休假', 409);
+            }
+            const range = store.saveLeaveRange(userId, id, startDay, endDay);
+            store.log(userId, 'info', 'leave', `已${id ? '修改' : '设置'}日期休假（${startDay} 至 ${endDay}）`);
+            return range;
+          });
+          return json(res, 200, { range });
         });
       }
       if (path === '/api/runs' && method === 'GET') {

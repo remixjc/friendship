@@ -65,6 +65,27 @@ test('全天休假暂停当天的任务，次日自动恢复', async t => {
   assert.equal(f.calls(), 1);
 });
 
+test('跨月日期休假包含两端，重启后仍生效，结束后的第一个工作日恢复', async t => {
+  const f = fixture(t);
+  const range = f.store.saveLeaveRange(f.user.id, '', '2026-10-30', '2026-11-02');
+  f.setNow('2026-10-30T00:00:00Z');
+  await f.scheduler.tick();
+  f.setNow('2026-11-02T00:00:00Z');
+  const restarted = createScheduler(f.store, createAttendance(), () => new Date('2026-11-02T00:00:00Z'));
+  t.after(() => restarted.stop());
+  await assert.rejects(() => restarted.manual(f.user.id, false), error => error.status === 409);
+  await restarted.tick();
+  assert.deepEqual(f.store.runs(f.user.id).map(run => [run.day, run.status]), [
+    ['2026-11-02', 'skipped'], ['2026-10-30', 'skipped'],
+  ]);
+  assert.ok(f.store.runs(f.user.id).every(run => run.message.includes('休假日期')));
+  assert.equal(f.store.leaveRanges(f.user.id, '2026-11-02')[0].id, range.id);
+  assert.equal(f.store.leaveRanges(f.user.id, '2026-11-03').length, 0);
+  f.setNow('2026-11-03T00:00:00Z');
+  await f.scheduler.tick();
+  assert.equal(f.calls(), 1);
+});
+
 test('时段休假覆盖计划分钟和实际轮询分钟，取消后仍不会补跑已跳过的任务', async t => {
   for (const [startTime, endTime] of [['07:30', '08:00'], ['08:01', '09:00']]) {
     const f = fixture(t);
@@ -134,6 +155,7 @@ test('服务重启把进行中记录标记为未知，不重放，密码和会�
     const user = store.createUser({ username: 'tester' }, 'unused');
     store.saveSettings(user.id, defaults, 'test-sensitive-password');
     store.saveLeave(user.id, '2026-10-14', { startTime: '13:00', endTime: '20:00' });
+    const range = store.saveLeaveRange(user.id, '', '2026-10-20', '2026-12-20');
     const row = store.db.prepare('SELECT password,config FROM settings WHERE user_id=?').get(user.id);
     assert.ok(!JSON.stringify(row).includes('test-sensitive-password'));
     store.db.prepare("INSERT INTO runs(id,user_id,day,slot,trigger,status,created_at) VALUES('r',?,'2026-10-14','am','scheduled','running',?)")
@@ -143,5 +165,6 @@ test('服务重启把进行中记录标记为未知，不重放，密码和会�
     assert.equal(store.settings(user.id, true).password, 'test-sensitive-password');
     assert.equal(store.runs(user.id)[0].status, 'unknown');
     assert.deepEqual({ ...store.leave(user.id, '2026-10-14') }, { startTime: '13:00', endTime: '20:00' });
+    assert.equal(store.overlappingLeave(user.id, '2026-11-14', '2026-11-14').id, range.id);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
