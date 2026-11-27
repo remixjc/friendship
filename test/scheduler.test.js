@@ -50,6 +50,39 @@ test('错过计划不补交，下午仍正常执行', async t => {
   assert.equal(f.store.runs(f.user.id).length, 2);
 });
 
+test('全天休假暂停当天的任务，次日自动恢复', async t => {
+  const f = fixture(t);
+  f.store.saveLeave(f.user.id, '2026-10-14', { startTime: null, endTime: null });
+  await assert.rejects(() => f.scheduler.manual(f.user.id, false), error => error.status === 409 && /处于休假/.test(error.message));
+  await f.scheduler.tick();
+  f.setNow('2026-10-14T10:30:00Z');
+  await f.scheduler.tick();
+  assert.deepEqual(f.store.runs(f.user.id).map(run => run.status), ['skipped', 'skipped']);
+  assert.ok(f.store.runs(f.user.id).every(run => run.message.includes('休假时段')));
+  assert.equal(f.calls(), 0);
+  f.setNow('2026-10-15T00:00:00Z');
+  await f.scheduler.tick();
+  assert.equal(f.calls(), 1);
+});
+
+test('时段休假覆盖计划分钟和实际轮询分钟，取消后仍不会补跑已跳过的任务', async t => {
+  for (const [startTime, endTime] of [['07:30', '08:00'], ['08:01', '09:00']]) {
+    const f = fixture(t);
+    f.store.saveLeave(f.user.id, '2026-10-14', { startTime, endTime });
+    f.setNow('2026-10-14T00:01:00Z');
+    await f.scheduler.tick();
+    assert.equal(f.calls(), 0);
+    assert.equal(f.store.runs(f.user.id)[0].status, 'skipped');
+    assert.match(f.store.runs(f.user.id)[0].message, /休假时段/);
+    f.store.deleteLeave(f.user.id, '2026-10-14');
+    await f.scheduler.tick();
+    assert.equal(f.calls(), 0);
+    f.setNow('2026-10-14T10:30:00Z');
+    await f.scheduler.tick();
+    assert.equal(f.calls(), 1);
+  }
+});
+
 test('工作日覆盖和账户停用均阻止自动执行', async t => {
   const f = fixture(t);
   const config = f.store.settings(f.user.id);
@@ -100,6 +133,7 @@ test('服务重启把进行中记录标记为未知，不重放，密码和会�
   try {
     const user = store.createUser({ username: 'tester' }, 'unused');
     store.saveSettings(user.id, defaults, 'test-sensitive-password');
+    store.saveLeave(user.id, '2026-10-14', { startTime: '13:00', endTime: '20:00' });
     const row = store.db.prepare('SELECT password,config FROM settings WHERE user_id=?').get(user.id);
     assert.ok(!JSON.stringify(row).includes('test-sensitive-password'));
     store.db.prepare("INSERT INTO runs(id,user_id,day,slot,trigger,status,created_at) VALUES('r',?,'2026-10-14','am','scheduled','running',?)")
@@ -108,5 +142,6 @@ test('服务重启把进行中记录标记为未知，不重放，密码和会�
     store = createStore(dir);
     assert.equal(store.settings(user.id, true).password, 'test-sensitive-password');
     assert.equal(store.runs(user.id)[0].status, 'unknown');
+    assert.deepEqual({ ...store.leave(user.id, '2026-10-14') }, { startTime: '13:00', endTime: '20:00' });
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

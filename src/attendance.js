@@ -1,5 +1,5 @@
 import { randomInt } from 'node:crypto';
-import { AppError, isWeekday, localClock } from './config.js';
+import { AppError, appleHolidayUrl, defaults, isWeekday, localClock } from './config.js';
 import { normalizeDays, normalizeSummary, normalizeQuota, reportQuery } from './reports.js';
 import { createUpstreamSessions, UpstreamAuthError } from './upstream-session.js';
 import { createHolidayCalendar } from './holidays.js';
@@ -19,10 +19,11 @@ export function createAttendance(fetchImpl = fetch, timeout = 12000, { store, cl
     saveUpstreamSession: (id, value) => memory.set(id, value),
   }, clock);
   async function request(url, options = {}, submitted = false) {
+    const { timeoutMs = timeout, asText = false, ...fetchOptions } = options;
     const uncertain = submitted ? 'unknown' : 'failed';
     try {
       const response = await fetchImpl(url, {
-        ...options, redirect: 'error', signal: AbortSignal.timeout(timeout),
+        ...fetchOptions, redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
         headers: { Accept: 'application/json', ...options.headers },
       });
       if (response.status === 401) throw new UpstreamAuthError();
@@ -40,8 +41,10 @@ export function createAttendance(fetchImpl = fetch, timeout = 12000, { store, cl
         }
         chunks.push(Buffer.from(value));
       }
+      const text = Buffer.concat(chunks).toString('utf8');
+      if (asText) return text;
       let json;
-      try { json = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+      try { json = JSON.parse(text); }
       catch { throw new AttendanceError('上游返回了非 JSON 响应', uncertain); }
       const expired = [json, json?.content].some(value => {
         if (!value || typeof value !== 'object') return false;
@@ -58,6 +61,12 @@ export function createAttendance(fetchImpl = fetch, timeout = 12000, { store, cl
       throw new AttendanceError('上游请求失败或超时，请检查网络和接口地址', uncertain);
     }
   }
+
+  const holidayTimeout = Math.min(timeout, 3000);
+  const requestHoliday = url => request(url, { timeoutMs: holidayTimeout });
+  const requestAppleHoliday = url => request(url, {
+    timeoutMs: holidayTimeout, asText: true, headers: { Accept: 'text/calendar' },
+  });
 
   function responseVerdict(json) {
     const objects = [json, json?.content, json?.content?.body];
@@ -211,15 +220,20 @@ export function createAttendance(fetchImpl = fetch, timeout = 12000, { store, cl
         return { workday: Boolean(config.workdayOverrides[day]), source: '日期覆盖' };
       }
       if (config.workdayMode === 'weekdays') return { workday: isWeekday(day), source: '周一至周五' };
-      try {
-        return await calendar.get(config.holidayUrl, day, url => request(url));
-      } catch {
-        return {
-          workday: config.holidayFallback === 'weekdays' && isWeekday(day),
-          source: config.holidayFallback === 'weekdays' ? '接口失败，按周一至周五回退' : '接口失败，跳过今日任务',
-          warning: true,
-        };
+      const appleFirst = config.holidayUrl === appleHolidayUrl;
+      const daily = () => calendar.get(appleFirst ? defaults.holidayUrl : config.holidayUrl, day, requestHoliday);
+      const apple = () => calendar.getApple(day, requestAppleHoliday);
+      const providers = appleFirst ? [apple, daily] : [daily, apple];
+      providers.push(() => calendar.getBackup(day, requestHoliday));
+      for (const lookup of providers) {
+        try { return await lookup(); }
+        catch { /* Try the next source before applying the selected failure policy. */ }
       }
+      return {
+        workday: config.holidayFallback === 'weekdays' && isWeekday(day),
+        source: config.holidayFallback === 'weekdays' ? '接口失败，按周一至周五回退' : '接口失败，跳过今日任务',
+        warning: true,
+      };
     },
   };
 }

@@ -3,14 +3,32 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createHolidayCalendar, HOLIDAY_CACHE_TTL, holidayRequestUrl, parseHoliday } from '../src/holidays.js';
+import { createHolidayCalendar, HOLIDAY_CACHE_TTL, holidayRequestUrl, parseAppleHolidayCalendar, parseHoliday } from '../src/holidays.js';
 import { createAttendance } from '../src/attendance.js';
 import { createStore } from '../src/store.js';
-import { defaults, legacyHolidayUrl, localClock } from '../src/config.js';
+import { appleHolidayUrl, defaults, legacyHolidayUrl, localClock } from '../src/config.js';
 import { createScheduler } from '../src/scheduler.js';
 
 const reply = type => ({ code: 0, type: { type } });
 const day = '2026-10-14';
+const calendarConfig = { ...defaults, workdayMode: 'holiday' };
+const holidayYear = year => ({
+  year, papers: ['https://www.gov.cn/zhengce/sample.htm'],
+  days: [
+    ['01-01', '元旦'], ['02-15', '春节'], ['04-05', '清明节'], ['05-01', '劳动节'],
+    ['06-19', '端午节'], ['09-25', '中秋节'], ['10-01', '国庆节'],
+  ].map(([date, name]) => ({ date: `${year}-${date}`, name, isOffDay: true })),
+});
+const appleFeed = (...years) => [
+  'BEGIN:VCALENDAR', ...years.flatMap(year => [
+    ...holidayYear(year).days.map(({ date, name }) => [
+      'BEGIN:VEVENT', `DTSTART;VALUE=DATE:${date.replaceAll('-', '')}`, `SUMMARY;LANGUAGE=zh_CN:${name}（休）`, 'END:VEVENT',
+    ].join('\r\n')),
+    `BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:${year}1001\r\nDTEND;VALUE=DATE:${year}1008\r\nSUMMARY:国庆节（休）\r\nEND:VEVENT`,
+    `BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:${year}1010\r\nSUMMARY:国庆节（\r\n 班）\r\nEND:VEVENT`,
+    `BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:${year}0910\r\nSUMMARY:教师节\r\nEND:VEVENT`,
+  ]), 'END:VCALENDAR',
+].join('\r\n');
 
 test('默认提莫日期模板和旧日期查询参数分别构建请求，保留其他参数', () => {
   assert.equal(holidayRequestUrl(defaults.holidayUrl, day).href, 'https://timor.tech/api/holiday/info/2026-10-14');
@@ -33,6 +51,75 @@ test('工作日与调休补班为工作，周末与法定假期休息；拒绝�
     { ...reply(0), holiday: { date: '2026-10-01' } },
     { code: 0, type: { type: 0, week: 4 } },
   ]) assert.throws(() => parseHoliday(invalid, day));
+});
+
+test('Apple 日历按全天事件的开始和结束日期解析，只使用明确标记的放假与补班', () => {
+  const { days, completeYears } = parseAppleHolidayCalendar(appleFeed(2026));
+  assert.deepEqual(completeYears, [2026]);
+  assert.equal(days['2026-10-07'], false);
+  assert.equal(days['2026-10-08'], undefined);
+  assert.equal(days['2026-10-10'], true);
+  assert.equal(days['2026-09-10'], undefined);
+  assert.throws(() => parseAppleHolidayCalendar(appleFeed(2026).replace('中秋节（休）', '中秋节')), /缺少完整年度/);
+  assert.throws(() => parseAppleHolidayCalendar(appleFeed(2026).replace('20261010', '20260230')), /无效日期/);
+});
+
+test('主接口超时自动切换 Apple，设置 Apple 为主源时失败则切换提莫', async () => {
+  const calls = [];
+  const fetch = async (url, { signal, headers }) => {
+    calls.push(url.hostname);
+    if (url.hostname === 'calendars.icloud.com') {
+      assert.equal(headers.Accept, 'text/calendar');
+      return new Response(appleFeed(2026));
+    }
+    return new Promise((resolve, reject) => {
+      const keepAlive = setTimeout(() => resolve(new Response('{}')), 1000);
+      signal.addEventListener('abort', () => {
+        clearTimeout(keepAlive);
+        reject(signal.reason);
+      }, { once: true });
+    });
+  };
+  const api = createAttendance(fetch, 15);
+  const result = await api.workday(calendarConfig, '2026-10-10');
+  assert.deepEqual(result, { workday: true, source: 'Apple 节假日日历' });
+  assert.deepEqual(calls, ['timor.tech', 'calendars.icloud.com']);
+  calls.length = 0;
+  const appleFirst = createAttendance(async url => {
+    calls.push(url.hostname);
+    return new Response(url.hostname === 'calendars.icloud.com' ? appleFeed(2025) : JSON.stringify(reply(2)));
+  });
+  assert.deepEqual(await appleFirst.workday({ ...calendarConfig, holidayUrl: appleHolidayUrl }, '2026-10-01'),
+    { workday: false, source: '节假日接口' });
+  assert.deepEqual(calls, ['calendars.icloud.com', 'timor.tech']);
+});
+
+test('年度备用日历拒绝不完整的镜像，合并跨年安排并在重启后跨日期复用', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'friends-annual-calendar-'));
+  let store = createStore(dir);
+  const calls = [];
+  const fetch = async url => {
+    calls.push(url.href);
+    if (!/[0-9]{4}\.json$/.test(url.pathname)) return new Response('', { status: 503 });
+    const year = Number(url.pathname.slice(-9, -5));
+    const data = holidayYear(year);
+    if (url.hostname === 'cdn.jsdelivr.net') data.days = data.days.slice(0, 1);
+    if (year === 2027) data.days.push({ date: '2026-12-31', name: '元旦', isOffDay: true });
+    return Response.json(data);
+  };
+  try {
+    const api = createAttendance(fetch, 12000, { store });
+    const result = await api.workday(calendarConfig, '2026-12-31');
+    assert.deepEqual(result, { workday: false, source: '节假日备用日历' });
+    assert.equal(calls.filter(url => url.includes('cdn.jsdelivr.net')).length, 2);
+    assert.equal(calls.filter(url => url.includes('raw.githubusercontent.com')).length, 2);
+    store.close();
+    store = createStore(dir);
+    const restarted = createAttendance(fetch, 12000, { store });
+    assert.deepEqual(await restarted.workday(calendarConfig, '2026-12-30'),
+      { workday: true, source: '节假日备用日历（缓存）' });
+    assert.equal(calls.filter(url => url.endsWith('.json')).length, 4);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('同日期并发查询合并，工作与休息结果都缓存，不同日期及接口相互隔离', async () => {
@@ -104,7 +191,7 @@ test('旧接口配置自动迁移且保留密码、当天原计划时间、执�
     store.db.prepare(`INSERT INTO runs(id,user_id,day,slot,trigger,status,created_at)
       VALUES('past',?,?,'am','scheduled','success',?)`).run(user.id, today, new Date().toISOString());
     // Simulate the deployed v2 schema to exercise the additive migration.
-    store.db.exec('ALTER TABLE plans DROP COLUMN refresh_workday; DROP TABLE holiday_calendar; PRAGMA user_version=2');
+    store.db.exec('ALTER TABLE plans DROP COLUMN refresh_workday; DROP TABLE holiday_calendar; DROP TABLE holiday_schedules; DROP TABLE daily_leave; PRAGMA user_version=2');
     store.close();
     store = createStore(dir);
     assert.equal(store.settings(user.id).holidayUrl, defaults.holidayUrl);

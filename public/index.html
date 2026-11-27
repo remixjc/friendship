@@ -20,5 +20,31 @@
         <div class="actions"><button class="button secondary" value="cancel">取消</button><button class="button primary" value="confirm">确认打卡</button></div>
       </form>
     </dialog>
+    <dialog id="today-leave-dialog" aria-labelledby="today-leave-title">
+      <form id="today-leave-form">
+        <h2 id="today-leave-title">今日休假</h2>
+        <p>按个人时区设置。休假期间跳过自动任务，暂停手动真实打卡。</p>
+        <label class="field">
+          <span>休假范围</span>
+          <select name="mode">
+            <option value="all-day">全天休假</option>
+            <option value="time-range">自选时段</option>
+          </select>
+        </label>
+        <div id="today-leave-times" hidden>
+          <div class="form-grid">
+            <label class="field"><span>开始时间</span><input name="startTime" type="time"></label>
+            <label class="field"><span>结束时间</span><input name="endTime" type="time"></label>
+          </div>
+          <small class="hint">包含开始和结束分钟。</small>
+        </div>
+        <div class="form-error" id="today-leave-error" role="alert"></div>
+        <div class="actions">
+          <button id="clear-today-leave" class="button danger" type="button" hidden>取消休假</button>
+          <button id="close-today-leave" class="button secondary" type="button">关闭</button>
+          <button class="button primary" type="submit">保存休假</button>
+        </div>
+      </form>
+    </dialog>
   </body>
 </html>

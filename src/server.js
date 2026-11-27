@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { AppError, defaults, importLegacy, localClock, validateSettings } from './config.js';
+import { AppError, defaults, importLegacy, localClock, validateLeaveTimes, validateSettings } from './config.js';
 import { hashPassword, newToken, tokenHash, validateAccount, validatePassword, verifyPassword } from './security.js';
 import { reportQuery } from './reports.js';
 
@@ -175,7 +175,23 @@ export async function createHttpServer({ store, scheduler, attendance, env = pro
           sum(CASE WHEN status='simulated' THEN 1 ELSE 0 END) AS simulated
           FROM runs WHERE user_id=? AND day=?`).get(userId, clock.day);
         return json(res, 200, { clock, timezone: config.timezone, enabled: config.enabled, dryRun: config.dryRun,
-          plan, stats, runs: store.runs(userId, 6), hasPassword: config.hasPassword });
+          plan, stats, runs: store.runs(userId, 6), hasPassword: config.hasPassword, leave: store.leave(userId, clock.day) });
+      }
+      if (path === '/api/leave/today' && ['PUT', 'DELETE'].includes(method)) {
+        const input = await readBody(req);
+        const leave = method === 'PUT' ? validateLeaveTimes(input) : null;
+        return await scheduler.withUser(userId, () => {
+          const { day } = localClock(new Date(), store.settings(userId).timezone);
+          if (input.day !== day) throw new AppError('日期已变化，请刷新概览后重新设置休假', 409);
+          store.transaction(() => {
+            const changed = leave ? store.saveLeave(userId, day, leave) : store.deleteLeave(userId, day);
+            if (changed) {
+              const range = leave?.startTime ? `${leave.startTime}–${leave.endTime}` : '全天';
+              store.log(userId, 'info', 'leave', leave ? `${day} 已设置休假（${range}）` : `${day} 已取消休假`);
+            }
+          });
+          return json(res, 200, { day, leave });
+        });
       }
       if (path === '/api/runs' && method === 'GET') {
         const page = Math.max(1, Math.min(100000, Number.parseInt(url.searchParams.get('page'), 10) || 1));

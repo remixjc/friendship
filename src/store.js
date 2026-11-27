@@ -60,11 +60,21 @@ export function createStore(dataDir, encryptionKey) {
       cache_key TEXT PRIMARY KEY, day TEXT NOT NULL,
       workday INTEGER NOT NULL CHECK(workday IN (0,1)), fetched_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS holiday_schedules (
+      cache_key TEXT PRIMARY KEY, payload TEXT NOT NULL, fetched_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS daily_leave (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      day TEXT NOT NULL, start_time TEXT, end_time TEXT,
+      CHECK ((start_time IS NULL AND end_time IS NULL)
+        OR (start_time IS NOT NULL AND end_time IS NOT NULL AND start_time < end_time)),
+      PRIMARY KEY(user_id,day)
+    );
   `);
   if (!db.prepare('PRAGMA table_info(plans)').all().some(column => column.name === 'refresh_workday')) {
     db.exec('ALTER TABLE plans ADD COLUMN refresh_workday INTEGER NOT NULL DEFAULT 0');
   }
-  db.exec('PRAGMA user_version=3');
+  db.exec('PRAGMA user_version=4');
   // A submitted request may have reached the upstream before a process crash. Do not replay it.
   db.prepare("UPDATE runs SET status='unknown',message='服务在执行过程中重启；请核对考勤结果，系统不会自动重试',completed_at=? WHERE status='running'")
     .run(new Date().toISOString());
@@ -137,7 +147,25 @@ export function createStore(dataDir, encryptionKey) {
         ON CONFLICT(cache_key) DO UPDATE SET day=excluded.day,workday=excluded.workday,fetched_at=excluded.fetched_at`)
         .run(key, entry.day, Number(entry.workday), entry.fetchedAt);
     },
+    loadHolidaySchedule(key) {
+      const row = db.prepare('SELECT payload,fetched_at FROM holiday_schedules WHERE cache_key=?').get(key);
+      return row && { ...JSON.parse(row.payload), fetchedAt: row.fetched_at };
+    },
+    saveHolidaySchedule(key, { fetchedAt, ...payload }) {
+      db.prepare(`INSERT INTO holiday_schedules(cache_key,payload,fetched_at) VALUES(?,?,?)
+        ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload,fetched_at=excluded.fetched_at`)
+        .run(key, JSON.stringify(payload), fetchedAt);
+    },
     plan: (id, day) => db.prepare('SELECT * FROM plans WHERE user_id=? AND day=?').get(id, day),
+    leave: (id, day) => db.prepare('SELECT start_time AS startTime,end_time AS endTime FROM daily_leave WHERE user_id=? AND day=?')
+      .get(id, day) ?? null,
+    saveLeave(id, day, { startTime, endTime }) {
+      return db.prepare(`INSERT INTO daily_leave(user_id,day,start_time,end_time) VALUES(?,?,?,?)
+        ON CONFLICT(user_id,day) DO UPDATE SET start_time=excluded.start_time,end_time=excluded.end_time
+        WHERE start_time IS NOT excluded.start_time OR end_time IS NOT excluded.end_time`)
+        .run(id, day, startTime, endTime).changes;
+    },
+    deleteLeave: (id, day) => db.prepare('DELETE FROM daily_leave WHERE user_id=? AND day=?').run(id, day).changes,
     log(id, level, event, message) {
       db.prepare('INSERT INTO logs(user_id,level,event,message,created_at) VALUES(?,?,?,?,?)')
         .run(id, level, event, message, new Date().toISOString());
@@ -154,7 +182,9 @@ export function createStore(dataDir, encryptionKey) {
       db.prepare('DELETE FROM logs WHERE created_at<?').run(cutoff);
       db.prepare('DELETE FROM runs WHERE created_at<?').run(cutoff);
       db.prepare('DELETE FROM plans WHERE created_at<?').run(cutoff);
+      db.prepare('DELETE FROM daily_leave WHERE day<?').run(cutoff.slice(0, 10));
       db.prepare('DELETE FROM holiday_calendar WHERE fetched_at<?').run(Date.now() - 7 * 86400000);
+      db.prepare('DELETE FROM holiday_schedules WHERE fetched_at<?').run(Date.now() - 7 * 86400000);
     },
     close: () => db.close(),
   };

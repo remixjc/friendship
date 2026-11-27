@@ -108,6 +108,33 @@ test('首次初始化、登录、退出、鉴权和 CSRF 校验', async t => {
   assert.ok(login.headers.get('set-cookie').includes('HttpOnly'));
 });
 
+test('今日休假限定个人时区、登录用户与当天，支持设置、修改及取消', async t => {
+  const f = await fixture(t);
+  const path = '/api/leave/today';
+  const { day } = (await f.admin.request('/api/dashboard')).data.clock;
+  const allDay = { day, startTime: null, endTime: null };
+  assert.equal((await f.client().request(path, 'PUT', allDay)).status, 401);
+  assert.equal((await f.admin.request(path, 'PUT', allDay, { 'X-CSRF-Token': 'invalid' })).status, 403);
+  assert.equal((await f.admin.request(path, 'PUT', { ...allDay, day: '2000-01-01' })).status, 409);
+  assert.equal((await f.admin.request(path, 'PUT', { ...allDay, startTime: '18:00', endTime: '08:00' })).status, 400);
+  assert.deepEqual((await f.admin.request(path, 'PUT', allDay)).data.leave, { startTime: null, endTime: null });
+  assert.equal((await f.admin.request('/api/attendance/run', 'POST', { dryRun: false })).status, 409);
+  assert.equal(f.upstreamRequests.length, 0);
+  assert.equal((await f.admin.request('/api/attendance/run', 'POST', { dryRun: true })).data.status, 'simulated');
+  const interval = { startTime: '13:00', endTime: '18:30' };
+  assert.equal((await f.admin.request(path, 'PUT', { day, ...interval })).status, 200);
+  assert.deepEqual((await f.admin.request('/api/dashboard')).data.leave, interval);
+  const credentials = { username: 'leave-member', password: 'test-member-password' };
+  assert.equal((await f.admin.request('/api/users', 'POST', { ...credentials, role: 'user' })).status, 201);
+  const member = f.client();
+  await member.request('/api/auth/login', 'POST', credentials);
+  assert.equal((await member.request('/api/dashboard')).data.leave, null);
+  assert.equal((await member.request(path, 'DELETE', { day })).status, 200);
+  assert.deepEqual((await f.admin.request('/api/dashboard')).data.leave, interval);
+  assert.equal((await f.admin.request(path, 'DELETE', { day })).status, 200);
+  assert.equal((await f.admin.request('/api/dashboard')).data.leave, null);
+});
+
 test('完整流程：配置、加密、考勤登录、模拟、真实打卡、历史和日志', async t => {
   const f = await fixture(t);
   const input = { apiBaseUrl: f.apiBaseUrl, username: 'attendance-user', password: 'test-attendance-password', openId: 'client-openid', dryRun: false };

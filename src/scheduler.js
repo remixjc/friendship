@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { AppError, localClock, minutes, randomTime } from './config.js';
 
+function onLeave(leave, time) {
+  return leave && (leave.startTime === null || (time >= leave.startTime && time <= leave.endTime));
+}
+
 export function createScheduler(store, attendance, clock = () => new Date()) {
   const locks = new Map();
   let timer;
@@ -62,12 +66,14 @@ export function createScheduler(store, attendance, clock = () => new Date()) {
     async manual(id, dryRun = true) {
       return scheduler.withUser(id, async () => {
         const config = store.settings(id);
+        const { day, time } = localClock(clock(), config.timezone);
+        if (!dryRun && onLeave(store.leave(id, day), time)) throw new AppError('当前处于休假时段，真实打卡已暂停', 409);
         if (!dryRun && config.dryRun) throw new AppError('请先在配置中关闭模拟模式，再执行真实打卡');
         if (!dryRun && (!config.company || !config.username || !config.hasPassword || !config.openId)) {
           throw new AppError('请先完成考勤账号配置');
         }
         return scheduler.execute(id, config, {
-          day: localClock(clock(), config.timezone).day, slot: 'manual', trigger: 'manual', dryRun,
+          day, slot: 'manual', trigger: 'manual', dryRun,
         });
       });
     },
@@ -87,19 +93,24 @@ export function createScheduler(store, attendance, clock = () => new Date()) {
                 const now = clock();
                 const plan = await scheduler.ensurePlan(user.id, config, now);
                 if (!config.enabled || !plan?.workday) return;
-                const { time, day } = localClock(clock(), config.timezone);
-                if (day !== plan.day) return;
+                const leave = store.leave(user.id, plan.day);
                 for (const slot of ['am', 'pm']) {
+                  const checkedAt = clock();
+                  const { time, day } = localClock(checkedAt, config.timezone);
+                  if (day !== plan.day) return;
                   const diff = minutes(time) - minutes(plan[slot]);
                   if (diff < 0) continue;
                   const existing = store.db.prepare("SELECT id FROM runs WHERE user_id=? AND day=? AND slot=? AND trigger='scheduled'")
                     .get(user.id, day, slot);
                   if (existing) continue;
-                  if (diff > 1) {
+                  const missed = diff > 1;
+                  if (missed || onLeave(leave, plan[slot]) || onLeave(leave, time)) {
+                    const message = missed ? '错过计划时间，未补打卡' : '休假时段内，已跳过自动打卡';
+                    const timestamp = checkedAt.toISOString();
                     store.db.prepare(`INSERT OR IGNORE INTO runs(id,user_id,day,slot,trigger,status,message,created_at,completed_at)
                       VALUES(?,?,?,?,'scheduled','skipped',?,?,?)`)
-                      .run(randomUUID(), user.id, day, slot, '错过计划时间，未补打卡', now.toISOString(), now.toISOString());
-                    store.log(user.id, 'warn', 'missed', `${day} ${plan[slot]}：错过计划时间，未补打卡`);
+                      .run(randomUUID(), user.id, day, slot, message, timestamp, timestamp);
+                    store.log(user.id, missed ? 'warn' : 'info', missed ? 'missed' : 'leave', `${day} ${plan[slot]}：${message}`);
                   } else {
                     await scheduler.execute(user.id, config, { day, slot, trigger: 'scheduled', dryRun: config.dryRun });
                   }

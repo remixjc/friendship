@@ -62,6 +62,13 @@ th{background:#fafbfe;color:#8a96a8}td{border-color:#edf0f5;color:#52617a}.empty
 .settings-aside{top:22px}.aside-card{padding:23px;border-radius:14px}.aside-card h3{color:#1a263b}.aside-card p{color:#79879b}.note-green{background:#eef7f2;border-color:#d9eee3}.note-green h3{color:#257b5d}.note-green p{color:#6b8e7b}.save-bar{border-color:#e3e8f1;border-radius:11px;box-shadow:0 8px 22px #20345b07}.save-bar span{color:#7b899f}
 .report-filter{padding:21px 23px}.report-filter,.report-summary{box-shadow:0 8px 24px #20345b08}.report-note{background:#fafbfe;border-color:#edf0f5;color:#7d899a}.summary-item{background:#fafbfe;border-color:#e5eaf2}.summary-item strong{color:#2a3952}.summary-item p{color:#182847}.quota-expiry{background:#fafbfe;border-color:#edf0f5}.log-row{border-color:#edf0f5}.account-card{box-shadow:0 8px 24px #20345b08}
 dialog{border:0;border-radius:16px;padding:32px;box-shadow:0 24px 70px #10182833}dialog::backdrop{background:#10182899}dialog h2{color:#15213a}
+#today-leave-dialog{width:min(440px,calc(100% - 32px));max-width:none;padding:24px}
+#today-leave-dialog [hidden]{display:none}
+#today-leave-dialog .form-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+#today-leave-dialog input{min-width:0}
+#today-leave-dialog .form-error{margin:8px 0}
+#clear-today-leave{margin-right:auto}
+.leave-summary{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 12px;margin-bottom:16px;padding:12px 16px;border:1px solid #dce5ff;border-radius:9px;background:var(--soft);color:var(--primary-dark);font-size:12px;line-height:1.5}
 #toast{background:#172f86;border-radius:10px;box-shadow:0 12px 30px #10182836}#toast.error{background:#a94f50}
 @media(max-width:1100px){.shell{grid-template-columns:220px 1fr}.sidebar{padding-left:13px;padding-right:13px}.content{padding-left:30px;padding-right:30px}.topbar{padding-left:30px;padding-right:30px}}
 @media(max-width:760px){.sidebar{background:var(--navy);padding:14px 18px}.sidebar .brand{margin:0 0 18px}.topbar{background:#fff;padding:0 20px}.content{padding:26px 20px 42px}.auth-story{padding:27px 25px;min-height:300px}.auth-story h1{font-size:31px;margin:33px 0 16px}.auth-main{padding:26px 18px 40px}.auth-card{padding:31px 24px;border-radius:15px}.welcome{padding:22px}.stat{padding:17px 15px}.card-head,.card-body{padding-left:18px;padding-right:18px}.section-card{padding:22px 18px}.aside-card{padding:21px}.save-bar{bottom:11px}}

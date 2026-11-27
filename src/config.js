@@ -8,6 +8,7 @@ export class AppError extends Error {
 }
 
 export const legacyHolidayUrl = 'https://api.apihubs.cn/holiday/get';
+export const appleHolidayUrl = 'https://calendars.icloud.com/holidays/cn_zh.ics';
 
 export const defaults = {
   enabled: false,
@@ -67,6 +68,16 @@ export function isDate(day) {
     && new Date(`${day}T00:00:00Z`).toISOString().slice(0, 10) === day;
 }
 
+const isTime = value => typeof value === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+
+export function validateLeaveTimes({ startTime, endTime }) {
+  if (startTime === null && endTime === null) return { startTime, endTime };
+  if (!isTime(startTime) || !isTime(endTime) || startTime >= endTime) {
+    throw new AppError('请选择有效的休假时段，结束时间需晚于开始时间');
+  }
+  return { startTime, endTime };
+}
+
 function validUrl(value, name, allowHttp) {
   try {
     const url = new URL(value);
@@ -86,7 +97,7 @@ export function validateSettings(input, previous = defaults, hasPassword = false
     if (typeof settings[key] !== 'boolean') throw new AppError(`${key}必须为布尔值`);
   }
   for (const key of ['freshDate', 'amStart', 'amEnd', 'pmStart', 'pmEnd']) {
-    if (typeof settings[key] !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(settings[key])) {
+    if (!isTime(settings[key])) {
       throw new AppError('时间必须使用 HH:mm 格式');
     }
   }
