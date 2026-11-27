@@ -77,21 +77,28 @@ function showAuth(initialized) {
 }
 const pages = { dashboard: ['dashboard', '工作概览', 'Overview'], attendance: ['logs', '考勤记录', 'Attendance'], quota: ['sun', '年假配额', 'Leave quota'], settings: ['settings', '个人配置', 'Configuration'], runs: ['clock', '执行记录', 'History'], logs: ['logs', '运行日志', 'Activity'], users: ['users', '用户管理', 'Members'], account: ['shield', '账号安全', 'Security'] };
 const mobilePrimaryPages = new Set(['dashboard', 'attendance', 'runs', 'settings']);
-const mobileMorePages = new Set(['quota', 'logs', 'users', 'account']);
 function shell() {
   const visiblePages = Object.entries(pages).filter(([key]) => key !== 'users' || state.user.role === 'admin');
-  const navLinks = visiblePages.map(([key, [name, title]]) => `<a href="#${key}" data-page="${key}">${icon(name)}${title}</a>`).join('');
-  const moreLinks = visiblePages.filter(([key]) => mobileMorePages.has(key)).map(([key, [name, title]]) => `<a href="#${key}" data-page="${key}">${icon(name)}<span>${title}</span><span class="mobile-more-arrow">›</span></a>`).join('');
-  root.innerHTML = `<div class="shell"><aside class="sidebar">${brand}<div class="nav-label">WORKSPACE</div><nav class="nav">${navLinks}</nav><button class="mobile-more" type="button" data-action="mobile-more" aria-expanded="false">${icon('more')}<span>更多</span></button><div class="sidebar-bottom"><div class="side-note"><strong>每一次执行，都有迹可循。</strong><p>计划和结果持久保存，随时了解<br>你的考勤任务运行情况。</p></div><div class="profile"><span class="avatar">${escape(state.user.displayName.slice(0, 1).toUpperCase())}</span><div class="profile-info"><strong>${escape(state.user.displayName)}</strong><span>${state.user.role === 'admin' ? '管理员' : '成员'}</span></div><button class="logout" data-action="logout" aria-label="退出登录">${icon('logout')}</button></div></div></aside><main class="main"><header class="topbar"><div>工作空间 <span> / </span><strong id="breadcrumb">工作概览</strong></div><div class="topbar-right"><span class="online">服务运行中</span><span class="profile-mobile">${escape(state.user.displayName)}<button data-action="logout">退出</button></span><span id="top-date"></span></div></header><div class="content" id="content"></div></main></div><div class="mobile-more-panel" hidden aria-hidden="true"><button class="mobile-more-backdrop" type="button" data-action="mobile-more" aria-label="关闭更多菜单"></button><section class="mobile-more-card" role="dialog" aria-label="更多功能"><div class="mobile-more-head"><div><span class="eyebrow">WORKSPACE</span><h2>更多功能</h2></div><button class="mobile-more-close" type="button" data-action="mobile-more">关闭</button></div><nav class="mobile-more-nav">${moreLinks}</nav><button class="mobile-more-logout" type="button" data-action="logout">${icon('logout')}退出登录</button></section></div>`;
+  const navLinks = visiblePages.map(([key, [name, title]]) => `<a href="#${key}" data-page="${key}"${mobilePrimaryPages.has(key) ? '' : ' class="desktop-nav-link"'}>${icon(name)}${title}</a>`).join('');
+  const moreLinks = visiblePages.filter(([key]) => !mobilePrimaryPages.has(key)).map(([key, [name, title]]) => `<a href="#${key}" data-page="${key}">${icon(name)}<span>${title}</span><span class="mobile-more-arrow" aria-hidden="true">›</span></a>`).join('');
+  root.innerHTML = `<div class="shell"><aside class="sidebar">${brand}<div class="nav-label">WORKSPACE</div><nav class="nav" aria-label="主导航">${navLinks}</nav><button class="mobile-more" type="button" data-action="mobile-more" aria-haspopup="dialog" aria-controls="mobile-more-panel" aria-expanded="false">${icon('more')}<span>更多</span></button><div class="sidebar-bottom"><div class="side-note"><strong>每一次执行，都有迹可循。</strong><p>计划和结果持久保存，随时了解<br>你的考勤任务运行情况。</p></div><div class="profile"><span class="avatar">${escape(state.user.displayName.slice(0, 1).toUpperCase())}</span><div class="profile-info"><strong>${escape(state.user.displayName)}</strong><span>${state.user.role === 'admin' ? '管理员' : '成员'}</span></div><button class="logout" data-action="logout" aria-label="退出登录">${icon('logout')}</button></div></div></aside><main class="main"><header class="topbar"><div>工作空间 <span> / </span><strong id="breadcrumb">工作概览</strong></div><div class="topbar-right"><span class="online">服务运行中</span><span class="profile-mobile"><span>${escape(state.user.displayName)}</span><button data-action="logout">退出</button></span><span id="top-date"></span></div></header><div class="content" id="content"></div></main></div>
+    <dialog class="mobile-more-panel" id="mobile-more-panel" aria-labelledby="mobile-more-title">
+      <div class="mobile-more-card">
+        <div class="mobile-more-head"><h2 id="mobile-more-title">更多功能</h2><button class="mobile-more-close" type="button" data-action="mobile-more" autofocus>关闭</button></div>
+        <nav class="mobile-more-nav" aria-label="更多功能">${moreLinks}</nav>
+        <button class="mobile-more-logout" type="button" data-action="logout">${icon('logout')}退出登录</button>
+      </div>
+    </dialog>`;
+  const panel = document.querySelector('#mobile-more-panel');
+  panel.addEventListener('close', () => root.querySelector('.mobile-more')?.setAttribute('aria-expanded', String(panel.open)));
   root.addEventListener('click', onClick);
 }
 function setMobileMore(open) {
-  const panel = document.querySelector('.mobile-more-panel');
-  if (!panel) return;
-  panel.hidden = !open;
-  panel.setAttribute('aria-hidden', String(!open));
-  document.body.classList.toggle('mobile-menu-open', open);
-  document.querySelector('.mobile-more')?.setAttribute('aria-expanded', String(open));
+  const panel = document.querySelector('#mobile-more-panel');
+  if (!panel || panel.open === open) return;
+  if (open) panel.showModal();
+  else panel.close();
+  root.querySelector('.mobile-more').setAttribute('aria-expanded', String(open));
 }
 function heading(title, subtitle, actions = '') {
   return `<div class="page-heading"><div><span class="eyebrow">${pages[state.page]?.[2].toUpperCase() || 'WORKSPACE'}</span><h1>${title}</h1><p>${subtitle}</p></div><div class="actions">${actions}</div></div>`;
@@ -173,7 +180,11 @@ async function renderPage({ quiet = false } = {}) {
   if (!state.user) return;
   const page = state.page;
   const renderId = ++state.renderId;
-  document.querySelectorAll('[data-page]').forEach(a => a.classList.toggle('active', a.dataset.page === page));
+  root.querySelectorAll('[data-page]').forEach(link => {
+    if (link.dataset.page === page) link.setAttribute('aria-current', 'page');
+    else link.removeAttribute('aria-current');
+  });
+  root.querySelector('.mobile-more').classList.toggle('active', !mobilePrimaryPages.has(page));
   document.querySelector('#breadcrumb').textContent = pages[page]?.[1] || '工作概览';
   const content = document.querySelector('#content');
   if (!quiet) content.innerHTML = '<div class="loading">正在加载…</div>';
@@ -312,16 +323,17 @@ async function confirmRealRun() {
   return new Promise(resolve => dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), { once: true }));
 }
 async function onClick(event) {
-  if (event.target.closest('.mobile-more-panel a')) setMobileMore(false);
+  if (event.target.matches('.mobile-more-panel') || event.target.closest('.mobile-more-nav a')) setMobileMore(false);
   const element = event.target.closest('[data-action]');
   if (!element || element.disabled) return;
   const action = element.dataset.action;
+  if (action === 'mobile-more') {
+    setMobileMore(element.classList.contains('mobile-more'));
+    return;
+  }
   element.disabled = true;
   try {
-    if (action === 'mobile-more') {
-      const panel = document.querySelector('.mobile-more-panel');
-      setMobileMore(Boolean(panel?.hidden));
-    } else if (action === 'logout') {
+    if (action === 'logout') {
       await api('/auth/logout', { method: 'POST' });
       state.user = null; state.csrf = null; state.settings = null;
       state.reportMonth = ''; state.reportPage = 1; state.summaryPage = 1;
@@ -373,6 +385,9 @@ window.addEventListener('hashchange', () => {
   setMobileMore(false);
   state.page = location.hash.slice(1) || 'dashboard';
   void renderPage();
+});
+window.matchMedia('(max-width: 760px)').addEventListener('change', event => {
+  if (!event.matches) setMobileMore(false);
 });
 try {
   const result = await api('/auth/status');
