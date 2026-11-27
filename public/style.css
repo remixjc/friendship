@@ -73,6 +73,7 @@ dialog{border:0;border-radius:16px;padding:32px;box-shadow:0 24px 70px #10182833
 .leave-summary span{overflow-wrap:anywhere}
 .leave-summary .button{min-height:36px;color:var(--primary-dark)}
 .field{min-inline-size:0;grid-template-columns:minmax(0,1fr)}
+.workday-fields{align-items:start}
 .field input:is([type="date"],[type="month"],[type="time"]){
   display:block;
   -webkit-appearance:none;

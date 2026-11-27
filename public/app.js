@@ -206,13 +206,27 @@ function dashboard(data) {
 function section(number, title, subtitle, content) {
   return `<section class="card section-card"><div class="section-title"><span class="section-number">${number}</span><div><h2>${title}</h2><p>${subtitle}</p></div></div>${content}</section>`;
 }
+const holidayPresetUrls = {
+  timor: 'https://timor.tech/api/holiday/info/{date}',
+  apple: 'https://calendars.icloud.com/holidays/cn_zh.ics',
+};
+function workdaySettings(config) {
+  const preset = Object.keys(holidayPresetUrls).find(key => holidayPresetUrls[key] === config.holidayUrl) ?? 'custom';
+  return `<div class="form-grid workday-fields">
+    ${select('workdayMode', '工作日判断', config.workdayMode, [['weekdays', '周一至周五'], ['holiday', '中国节假日接口（含调休）']])}
+    ${select('holidayPreset', '节假日优先来源', preset, [['timor', '提莫节假日接口'], ['apple', 'Apple 中国大陆节假日日历'], ['custom', '自定义接口']], '更换来源会启用中国节假日判断。主源不可用时自动尝试备用来源。')}
+    ${select('holidayFallback', '全部节假日来源失败时', config.holidayFallback, [['skip', '跳过当天自动任务'], ['weekdays', '回退为周一至周五']])}
+    <div class="span-2" id="custom-holiday-url"${preset === 'custom' ? '' : ' hidden'}>${field('holidayUrl', '节假日接口地址', preset === 'custom' ? config.holidayUrl : '', { type: 'url' })}</div>
+    <label class="field span-2"><span>指定日期覆盖（JSON）</span><textarea name="workdayOverrides" spellcheck="false" placeholder='{"2026-10-01":0,"2026-10-10":1}'>${escape(JSON.stringify(config.workdayOverrides, null, 2))}</textarea><small>0 = 休息日，1 = 工作日。日期覆盖优先于其他规则。</small></label>
+  </div>`;
+}
 function settingsView(config) {
   return heading('个人配置', '配置你的考勤账号与执行计划。修改后，请保存再测试。')
     + `<div class="settings-layout"><form id="settings-form">${section('01', '运行方式', '先用模拟模式验证，准备好后再开启真实执行。',
       toggle('enabled', '开启定时任务', config.enabled, '在工作日按上午、下午计划自动执行。') + toggle('dryRun', '模拟模式', config.dryRun, '仅生成执行记录，不登录或提交考勤请求。'))}
       ${section('02', '考勤账号', '登录状态自动保存，失效后重新登录；修改考勤账号会清除原登录状态。', `<div class="form-grid">${field('company', '公司标识', config.company)}${field('username', '考勤用户名', config.username)}${field('password', '考勤密码', '', { type: 'password', placeholder: config.hasPassword ? '已保存，留空保持原密码' : '请输入考勤密码', hint: '加密保存，页面不会回显。' })}${field('openId', 'OpenID', config.openId)}${field('source', '登录来源 source', config.source, { type: 'number', min: 0, max: 100, step: 1 })}${field('apiBaseUrl', '考勤接口根地址', config.apiBaseUrl, { type: 'url', hint: '登录与打卡使用同一个 HTTPS 域名。' })}</div><label class="hint"><input type="checkbox" name="clearPassword"> 删除已保存的考勤密码</label>`)}
       ${section('03', '每日时间计划', '每天在时间段内随机选择一个分钟。上午、下午任务各执行一次。', `<div class="form-grid">${field('amStart', '上午开始', config.amStart, { type: 'time', required: true })}${field('amEnd', '上午结束', config.amEnd, { type: 'time', required: true })}${field('pmStart', '下午开始', config.pmStart, { type: 'time', required: true })}${field('pmEnd', '下午结束', config.pmEnd, { type: 'time', required: true })}${field('freshDate', '每日刷新时间', config.freshDate, { type: 'time', required: true, hint: '需早于或等于上午开始时间。' })}${field('timezone', '计划时区', config.timezone, { required: true, hint: '例如 Asia/Shanghai、Asia/Tokyo。' })}</div>`)}
-      ${section('04', '工作日规则', '可识别调休，也可以为指定日期直接覆盖工作日状态。', `<div class="form-grid">${select('workdayMode', '工作日判断', config.workdayMode, [['weekdays', '周一至周五'], ['holiday', '中国节假日接口（含调休）']])}${select('holidayFallback', '全部节假日来源失败时', config.holidayFallback, [['skip', '跳过当天自动任务'], ['weekdays', '回退为周一至周五']])}${field('holidayUrl', '节假日接口地址', config.holidayUrl, { type: 'url', span: true, hint: '默认使用提莫，也支持 Apple 中国大陆节假日日历。主源超时后自动查询备用来源。' })}<label class="field span-2"><span>指定日期覆盖（JSON）</span><textarea name="workdayOverrides" spellcheck="false" placeholder='{"2026-10-01":0,"2026-10-10":1}'>${escape(JSON.stringify(config.workdayOverrides, null, 2))}</textarea><small>0 = 休息日，1 = 工作日。日期覆盖优先于其他规则。</small></label></div>`)}
+      ${section('04', '工作日规则', '可识别调休，也可以为指定日期直接覆盖工作日状态。', workdaySettings(config))}
       ${section('05', '打卡位置', '按原项目规则，从地点列表中随机选择地点，并可对坐标添加正向偏移。', `<div class="form-grid">${field('longitude', '经度', config.longitude, { type: 'number', min: -180, max: 180, step: 'any', required: true })}${field('latitude', '纬度', config.latitude, { type: 'number', min: -90, max: 90, step: 'any', required: true })}${field('coordinateJitter', '最大随机偏移（度）', config.coordinateJitter, { type: 'number', min: 0, max: 0.001, step: 'any', hint: '设置为 0 时使用固定坐标。', span: true })}<label class="field span-2"><span>打卡地点</span><textarea name="sites" required rows="5">${escape(config.sites.join('\n'))}</textarea><small>每行一个地点，最多 50 个。</small></label></div>`)}
       <div class="form-error" id="settings-error" role="alert"></div><div class="save-bar"><span>修改会重新生成今日计划。</span><button class="button primary" type="submit">${icon('check')}保存配置</button></div></form><aside class="settings-aside"><section class="card aside-card"><h3>准备好了吗？</h3><p>先保存配置，再验证考勤登录。模拟打卡可以随时测试，不会向考勤系统提交请求。</p>${button('测试考勤登录', 'test-login', 'shield')}${button('模拟打卡', 'simulate', 'play')}</section><section class="card aside-card note-green"><h3>从旧项目迁移</h3><p>导入原项目的 datas.json，自动转换账号与时间配置。导入后仍保持任务关闭、模拟模式开启。</p>${button('导入 datas.json', 'import', 'logs')}<input type="file" id="import-file" accept=".json,application/json" hidden><p class="hint">原项目晚于上午打卡的刷新时间，会自动调整为 00:05。</p></section><section class="card aside-card"><h3>关于每日计划</h3><p>每 15 秒检查一次。允许在计划分钟及下一分钟执行；离线期间错过的任务不会自动补交。修改配置不会重复已执行的定时任务。</p></section></aside></div>`;
 }
@@ -299,9 +313,24 @@ function attachForms() {
     void renderPage();
   });
   const settingsForm = document.querySelector('#settings-form');
+  if (settingsForm) {
+    const { holidayPreset, holidayUrl, workdayMode } = settingsForm.elements;
+    const updateCustomUrl = () => {
+      const custom = holidayPreset.value === 'custom';
+      settingsForm.querySelector('#custom-holiday-url').hidden = !custom;
+      holidayUrl.disabled = !custom;
+      holidayUrl.required = custom;
+    };
+    updateCustomUrl();
+    holidayPreset.addEventListener('change', () => {
+      workdayMode.value = 'holiday';
+      updateCustomUrl();
+    });
+  }
   settingsForm?.addEventListener('submit', async event => {
     event.preventDefault();
-    const data = Object.fromEntries(new FormData(settingsForm));
+    const { holidayPreset, ...data } = Object.fromEntries(new FormData(settingsForm));
+    if (Object.hasOwn(holidayPresetUrls, holidayPreset)) data.holidayUrl = holidayPresetUrls[holidayPreset];
     try {
       for (const key of ['enabled', 'dryRun', 'clearPassword']) data[key] = settingsForm.elements[key].checked;
       for (const key of ['source', 'longitude', 'latitude', 'coordinateJitter']) data[key] = Number(data[key]);
