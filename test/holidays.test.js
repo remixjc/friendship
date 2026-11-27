@@ -94,6 +94,95 @@ test('主接口超时自动切换 Apple，设置 Apple 为主源时失败则切�
   assert.deepEqual(calls, ['calendars.icloud.com', 'timor.tech']);
 });
 
+test('Apple 按北京时间每天刷新一次，离线多天和重启后继续使用本地日历', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'friends-apple-local-'));
+  let store = createStore(dir);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  let now = Date.parse('2026-10-01T15:58:00Z');
+  let requests = 0;
+  const download = async () => { requests++; return appleFeed(2026, 2027); };
+  let calendar = createHolidayCalendar(store, () => now);
+  const results = await Promise.all([
+    calendar.getApple('2026-10-01', download),
+    calendar.getApple('2026-10-10', download),
+    calendar.getApple('2027-10-01', download),
+  ]);
+  assert.deepEqual(results.map(result => result.workday), [false, true, false]);
+  assert.equal(requests, 1);
+  now += 60000;
+  await calendar.getApple('2026-10-02', download);
+  assert.equal(requests, 1);
+  now += 60000;
+  await Promise.all([calendar.refreshApple(download), calendar.refreshApple(download)]);
+  assert.equal(requests, 2);
+  now += 30 * HOLIDAY_CACHE_TTL;
+  store.db.prepare("UPDATE holiday_schedules SET fetched_at=? WHERE cache_key='apple'").run(1);
+  store.cleanup();
+  store.close();
+  store = createStore(dir);
+  calendar = createHolidayCalendar(store, () => now);
+  let rejectDownload;
+  const offline = () => {
+    requests++;
+    return new Promise((_, reject) => { rejectDownload = reject; });
+  };
+  assert.deepEqual(await calendar.getApple('2026-10-10', offline),
+    { workday: true, source: 'Apple 节假日日历（本地）' });
+  rejectDownload(new Error('offline'));
+  await calendar.waitForAppleRefresh();
+  store.close();
+  store = createStore(dir);
+  calendar = createHolidayCalendar(store, () => now);
+  assert.deepEqual(await calendar.getApple('2027-10-01', download),
+    { workday: false, source: 'Apple 节假日日历（本地）' });
+  assert.equal(requests, 3);
+  now += HOLIDAY_CACHE_TTL;
+  await calendar.refreshApple(async () => appleFeed(2026));
+  assert.equal(calendar.getLocalApple('2027-10-01').workday, false);
+  assert.equal(calendar.getLocalApple('2028-10-01'), null);
+});
+
+test('早上判断失败后自动恢复 Apple 快照，保留下午计划且不补打上午', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'friends-apple-recover-'));
+  const store = createStore(dir);
+  const user = store.createUser({ username: 'tester' }, 'unused');
+  store.saveSettings(user.id, { ...calendarConfig, holidayUrl: appleHolidayUrl, enabled: true,
+    amStart: '08:47', amEnd: '08:47', pmStart: '18:38', pmEnd: '18:38' });
+  let now = Date.parse('2026-10-14T00:47:00Z');
+  let online = false;
+  let requests = 0;
+  const api = createAttendance(async url => {
+    requests++;
+    if (online && url.href === appleHolidayUrl) return new Response(appleFeed(2026, 2027));
+    throw new Error('offline');
+  }, 12000, { store, clock: () => now });
+  const scheduler = createScheduler(store, api, () => new Date(now));
+  t.after(async () => {
+    await scheduler.stop();
+    await api.waitForAppleRefresh();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await scheduler.tick();
+  assert.equal(store.plan(user.id, day).workday, 0);
+  assert.equal(store.runs(user.id).length, 0);
+  now = Date.parse('2026-10-14T05:00:00Z');
+  online = true;
+  await scheduler.tick();
+  await api.waitForAppleRefresh();
+  const fetched = requests;
+  online = false;
+  now = Date.parse('2026-10-14T10:38:00Z');
+  await scheduler.tick();
+  const plan = store.plan(user.id, day);
+  assert.equal(plan.pm, '18:38');
+  assert.equal(plan.workday, 1);
+  assert.match(plan.source, /本地/);
+  assert.equal(requests, fetched);
+  const runs = Object.fromEntries(store.runs(user.id).map(run => [run.slot, run.status]));
+  assert.deepEqual(runs, { am: 'skipped', pm: 'simulated' });
+});
+
 test('年度备用日历拒绝不完整的镜像，合并跨年安排并在重启后跨日期复用', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'friends-annual-calendar-'));
   let store = createStore(dir);

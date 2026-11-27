@@ -37,6 +37,7 @@ async function main() {
     const closed = new Promise(resolve => server.close(resolve));
     await scheduler.stop();
     await closed;
+    await Promise.allSettled([attendance.waitForAppleRefresh()]);
     store.close();
     clearTimeout(deadline);
   }

@@ -207,7 +207,7 @@ export function createStore(dataDir, encryptionKey) {
       db.prepare('DELETE FROM daily_leave WHERE day<?').run(cutoff.slice(0, 10));
       db.prepare('DELETE FROM leave_ranges WHERE end_day<?').run(cutoff.slice(0, 10));
       db.prepare('DELETE FROM holiday_calendar WHERE fetched_at<?').run(Date.now() - 7 * 86400000);
-      db.prepare('DELETE FROM holiday_schedules WHERE fetched_at<?').run(Date.now() - 7 * 86400000);
+      db.prepare("DELETE FROM holiday_schedules WHERE cache_key<>'apple' AND fetched_at<?").run(Date.now() - 7 * 86400000);
     },
     close: () => db.close(),
   };

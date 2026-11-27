@@ -215,6 +215,17 @@ export function createAttendance(fetchImpl = fetch, timeout = 12000, { store, cl
       if (verdict === null) throw new AttendanceError('已提交请求，但响应缺少可识别的成功标记；请在考勤系统核对结果', 'unknown');
       return { employeeName: account.employeeName, message: '考勤接口已确认打卡成功' };
     },
+    refreshAppleCalendar(config) {
+      if (config.workdayMode === 'holiday') return calendar.refreshApple(requestAppleHoliday);
+    },
+    waitForAppleRefresh: () => calendar.waitForAppleRefresh(),
+    localWorkday(config, day, source) {
+      if (config.workdayMode !== 'holiday' || Object.hasOwn(config.workdayOverrides, day)) return null;
+      if (config.holidayUrl === appleHolidayUrl || /^(?:Apple 节假日日历|接口失败，)/.test(source)) {
+        return calendar.getLocalApple(day);
+      }
+      return null;
+    },
     async workday(config, day) {
       if (Object.hasOwn(config.workdayOverrides, day)) {
         return { workday: Boolean(config.workdayOverrides[day]), source: '日期覆盖' };

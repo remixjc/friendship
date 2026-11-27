@@ -4,6 +4,8 @@ import { AppError, appleHolidayUrl, isDate, isWeekday } from './config.js';
 export const HOLIDAY_CACHE_TTL = 24 * 60 * 60 * 1000;
 const HOLIDAY_YEAR_CACHE_TTL = 7 * HOLIDAY_CACHE_TTL;
 const FAILURE_COOLDOWN = 60 * 1000;
+const APPLE_RETRY_DELAY = 15 * 60 * 1000;
+const appleRefreshDay = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', dateStyle: 'short' });
 const BACKUP_CALENDARS = [
   'https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/',
   'https://raw.githubusercontent.com/NateScarlet/holiday-cn/master/',
@@ -123,6 +125,26 @@ export function parseAppleHolidayCalendar(text) {
   return { days, completeYears };
 }
 
+function appleWorkday(snapshot, day) {
+  const year = Number(day.slice(0, 4));
+  if (!snapshot?.completeYears.includes(year)
+    || (day.slice(5, 7) === '12' && !snapshot.completeYears.includes(year + 1))) return null;
+  return snapshot.days[day] ?? isWeekday(day);
+}
+
+function mergeAppleSnapshot(previous, fresh, now) {
+  const keepYears = (previous?.completeYears ?? []).filter(year =>
+    year >= new Date(now).getUTCFullYear() - 1 && !fresh.completeYears.includes(year));
+  const days = { ...fresh.days };
+  for (const [day, workday] of Object.entries(previous?.days ?? {})) {
+    const year = Number(day.slice(0, 4));
+    if (keepYears.includes(year) || (day.slice(5, 7) === '12' && keepYears.includes(year + 1))) {
+      days[day] = workday;
+    }
+  }
+  return { days, completeYears: [...fresh.completeYears, ...keepYears], fetchedAt: now, attemptedAt: now };
+}
+
 function createCache({ load, save, ttl }, clock) {
   const memory = new Map(), inFlight = new Map(), failures = new Map();
   return async (key, fetchEntry) => {
@@ -158,8 +180,32 @@ function createCache({ load, save, ttl }, clock) {
 export function createHolidayCalendar(store, clock = Date.now) {
   const daily = createCache({ load: store?.loadHoliday, save: store?.saveHoliday, ttl: HOLIDAY_CACHE_TTL }, clock);
   const scheduleStore = { load: store?.loadHolidaySchedule, save: store?.saveHolidaySchedule };
-  const apple = createCache({ ...scheduleStore, ttl: HOLIDAY_CACHE_TTL }, clock);
   const annual = createCache({ ...scheduleStore, ttl: HOLIDAY_YEAR_CACHE_TTL }, clock);
+  let appleSnapshot = store?.loadHolidaySchedule('apple') ?? null;
+  let appleRefresh;
+  let nextAppleRetry = 0;
+
+  function refreshApple(request) {
+    if (appleRefresh) return appleRefresh;
+    const now = clock();
+    const lastAttempt = appleSnapshot?.attemptedAt ?? appleSnapshot?.fetchedAt;
+    if (now < nextAppleRetry || (lastAttempt <= now && appleRefreshDay.format(lastAttempt) === appleRefreshDay.format(now))) return;
+    appleRefresh = (async () => {
+      let fresh;
+      try { fresh = parseAppleHolidayCalendar(await request(new URL(appleHolidayUrl))); }
+      catch {
+        nextAppleRetry = now + APPLE_RETRY_DELAY;
+        if (appleSnapshot) {
+          appleSnapshot = { ...appleSnapshot, attemptedAt: now };
+          store?.saveHolidaySchedule('apple', appleSnapshot);
+        }
+        return;
+      }
+      appleSnapshot = mergeAppleSnapshot(appleSnapshot, fresh, now);
+      store?.saveHolidaySchedule('apple', appleSnapshot);
+    })().finally(() => { appleRefresh = undefined; });
+    return appleRefresh;
+  }
 
   function getYear(year, request) {
     return annual(`holiday-cn:${year}`, async () => {
@@ -176,6 +222,12 @@ export function createHolidayCalendar(store, clock = Date.now) {
   }
 
   return {
+    refreshApple,
+    waitForAppleRefresh: () => appleRefresh,
+    getLocalApple(day) {
+      const workday = appleWorkday(appleSnapshot, day);
+      return workday === null ? null : { workday, source: 'Apple 节假日日历（本地）' };
+    },
     async get(endpoint, day, request) {
       const url = holidayRequestUrl(endpoint, day);
       const key = createHash('sha256').update(url.href).digest('hex');
@@ -186,13 +238,15 @@ export function createHolidayCalendar(store, clock = Date.now) {
     },
     async getApple(day, request) {
       if (!isDate(day)) throw new AppError('节假日查询日期无效');
-      const year = Number(day.slice(0, 4));
-      const { days, completeYears, cached } = await apple('apple', async () =>
-        parseAppleHolidayCalendar(await request(new URL(appleHolidayUrl))));
-      if (!completeYears.includes(year) || (day.slice(5, 7) === '12' && !completeYears.includes(year + 1))) {
-        throw new AppError('Apple 节假日日历尚未覆盖该日期', 502);
+      const workday = appleWorkday(appleSnapshot, day);
+      if (workday !== null) {
+        void refreshApple(request)?.catch(() => {});
+        return { workday, source: 'Apple 节假日日历（本地）' };
       }
-      return { workday: days[day] ?? isWeekday(day), source: cached ? 'Apple 节假日日历（缓存）' : 'Apple 节假日日历' };
+      await refreshApple(request);
+      const updated = appleWorkday(appleSnapshot, day);
+      if (updated === null) throw new AppError('Apple 节假日日历尚未覆盖该日期', 502);
+      return { workday: updated, source: 'Apple 节假日日历' };
     },
     async getBackup(day, request) {
       if (!isDate(day)) throw new AppError('节假日查询日期无效');

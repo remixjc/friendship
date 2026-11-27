@@ -23,7 +23,18 @@ export function createScheduler(store, attendance, clock = () => new Date()) {
     async ensurePlan(id, config = store.settings(id), now = clock()) {
       const { day, time } = localClock(now, config.timezone);
       let plan = store.plan(id, day);
-      if (plan && plan.revision === config.revision && !plan.refresh_workday) return plan;
+      if (plan && plan.revision === config.revision && !plan.refresh_workday) {
+        void attendance.refreshAppleCalendar?.(config)?.catch(() => {});
+        const local = attendance.localWorkday?.(config, day, plan.source);
+        if (local && (Number(local.workday) !== plan.workday || local.source !== plan.source)) {
+          const workday = Number(local.workday);
+          store.db.prepare('UPDATE plans SET workday=?,source=? WHERE user_id=? AND day=?')
+            .run(workday, local.source, id, day);
+          store.log(id, 'info', 'plan', `${day}：本地日历复核为${local.workday ? '工作日' : '休息日'}，保留原计划时间`);
+          return { ...plan, workday, source: local.source };
+        }
+        return plan;
+      }
       if (time < config.freshDate) return null;
       const calendarOnly = plan?.revision === config.revision && Boolean(plan.refresh_workday);
       const work = await attendance.workday(config, day);
